@@ -1,0 +1,568 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+enum CredentialType {
+  GITLAB_TOKEN
+  TEAMCITY_TOKEN
+  REGISTRY_USERNAME
+  REGISTRY_PASSWORD
+  SSH_PASSWORD
+  SSH_PRIVATE_KEY
+  TENCENT_CLOUD_SECRET_ID
+  TENCENT_CLOUD_SECRET_KEY
+}
+
+enum SyncStatus {
+  ACTIVE
+  MISSING
+  INACCESSIBLE
+}
+
+enum ImportStatus {
+  NOT_IMPORTED
+  IMPORTED
+  DISABLED
+}
+
+enum BuildMode {
+  BUILD_ALL
+  PATH_BASED
+}
+
+enum ApplicationStatus {
+  CONFIGURING
+  ACTIVE
+  ERROR
+  DISABLED
+}
+
+enum RegistryType {
+  TENCENT_TCR
+  GENERIC
+}
+
+enum ProvisionStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  PARTIAL_FAILED
+  FAILED
+  ROLLING_BACK
+  ROLLED_BACK
+}
+
+enum ProvisionStepStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+enum TeamCityResourceType {
+  PROJECT
+  VCS_ROOT
+  BUILD_TYPE
+  TRIGGER
+  PARAMETER
+}
+
+enum ExternalResourceStatus {
+  ACTIVE
+  MISSING
+  DRIFTED
+  ERROR
+}
+
+enum BuildStatus {
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELED
+  UNKNOWN
+}
+
+enum TriggerType {
+  VCS
+  MANUAL
+  API
+}
+
+enum ImageStatus {
+  AVAILABLE
+  DEPRECATED
+  DELETED
+}
+
+enum AuditResult {
+  SUCCESS
+  FAILED
+}
+
+enum ServerAuthType {
+  SSH_KEY
+  PASSWORD
+}
+
+enum ServerStatus {
+  PENDING
+  ONLINE
+  OFFLINE
+  ERROR
+  DISABLED
+}
+
+enum DeploymentStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum DeploymentEnvironment {
+  PRODUCTION
+  UAT
+  TEST
+}
+
+model User {
+  id           String            @id @default(uuid()) @db.Uuid
+  username     String            @unique
+  passwordHash String            @map("password_hash")
+  displayName  String?           @map("display_name")
+  role         UserRole          @default(USER)
+  enabled      Boolean           @default(true)
+  credentials  Credential[]
+  applications Application[]
+  tasks        CiProvisionTask[]
+  servers      Server[]
+  deployments  Deployment[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Credential {
+  id                      String               @id @default(uuid()) @db.Uuid
+  name                    String
+  type                    CredentialType
+  ciphertext              String
+  maskedHint              String               @map("masked_hint")
+  enabled                 Boolean              @default(true)
+  lastUsedAt              DateTime?            @map("last_used_at")
+  expiresAt               DateTime?            @map("expires_at")
+  createdById             String               @map("created_by") @db.Uuid
+  createdBy               User                 @relation(fields: [createdById], references: [id])
+  gitLabInstances         GitLabInstance[]
+  teamCityConnections     TeamCityConnection[]
+  registryUsernames       RegistryConnection[] @relation("RegistryUsername")
+  registryPasswords       RegistryConnection[] @relation("RegistryPassword")
+  registryCloudSecretIds  RegistryConnection[] @relation("RegistryCloudSecretId")
+  registryCloudSecretKeys RegistryConnection[] @relation("RegistryCloudSecretKey")
+  servers                 Server[]             @relation("ServerCredential")
+  createdAt               DateTime             @default(now()) @map("created_at")
+  updatedAt               DateTime             @updatedAt @map("updated_at")
+
+  @@index([createdById])
+  @@map("credentials")
+}
+
+model GitLabInstance {
+  id                  String          @id @default(uuid()) @db.Uuid
+  name                String
+  baseUrl             String          @map("base_url")
+  apiUrl              String          @map("api_url")
+  tokenCredentialId   String          @map("token_credential_id") @db.Uuid
+  tokenCredential     Credential      @relation(fields: [tokenCredentialId], references: [id])
+  verifySsl           Boolean         @default(true) @map("verify_ssl")
+  syncEnabled         Boolean         @default(true) @map("sync_enabled")
+  syncIntervalMinutes Int             @default(30) @map("sync_interval_minutes")
+  lastSyncAt          DateTime?       @map("last_sync_at")
+  lastSyncStatus      String?         @map("last_sync_status")
+  enabled             Boolean         @default(true)
+  projects            GitLabProject[]
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+
+  @@index([tokenCredentialId])
+  @@map("gitlab_instances")
+}
+
+model GitLabProject {
+  id                String            @id @default(uuid()) @db.Uuid
+  gitLabInstanceId  String            @map("gitlab_instance_id") @db.Uuid
+  gitLabInstance    GitLabInstance    @relation(fields: [gitLabInstanceId], references: [id], onDelete: Cascade)
+  gitLabProjectId   Int               @map("gitlab_project_id")
+  name              String
+  path              String
+  pathWithNamespace String            @map("path_with_namespace")
+  namespaceName     String            @map("namespace_name")
+  webUrl            String            @map("web_url")
+  httpCloneUrl      String            @map("http_clone_url")
+  sshCloneUrl       String            @map("ssh_clone_url")
+  defaultBranch     String            @map("default_branch")
+  visibility        String
+  description       String?
+  archived          Boolean           @default(false)
+  lastActivityAt    DateTime?         @map("last_activity_at")
+  syncStatus        SyncStatus        @default(ACTIVE) @map("sync_status")
+  importStatus      ImportStatus      @default(NOT_IMPORTED) @map("import_status")
+  applications      Application[]
+  teamCityVcsRoots  TeamCityVcsRoot[]
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  @@unique([gitLabInstanceId, gitLabProjectId])
+  @@index([pathWithNamespace])
+  @@map("gitlab_projects")
+}
+
+model TeamCityConnection {
+  id                String            @id @default(uuid()) @db.Uuid
+  name              String
+  baseUrl           String            @map("base_url")
+  tokenCredentialId String            @map("token_credential_id") @db.Uuid
+  tokenCredential   Credential        @relation(fields: [tokenCredentialId], references: [id])
+  parentProjectId   String            @map("parent_project_id")
+  verifySsl         Boolean           @default(true) @map("verify_ssl")
+  enabled           Boolean           @default(true)
+  lastTestAt        DateTime?         @map("last_test_at")
+  lastTestStatus    String?           @map("last_test_status")
+  applications      Application[]
+  vcsRoots          TeamCityVcsRoot[]
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  @@index([tokenCredentialId])
+  @@map("teamcity_connections")
+}
+
+model TeamCityVcsRoot {
+  id                   String             @id @default(uuid()) @db.Uuid
+  teamCityConnectionId String             @map("teamcity_connection_id") @db.Uuid
+  teamCityConnection   TeamCityConnection @relation(fields: [teamCityConnectionId], references: [id], onDelete: Cascade)
+  externalId           String             @map("external_id")
+  name                 String
+  teamCityProjectId    String             @map("teamcity_project_id")
+  teamCityProjectName  String             @map("teamcity_project_name")
+  repositoryUrl        String             @map("repository_url")
+  normalizedRepository String             @map("normalized_repository")
+  gitLabProjectId      String?            @map("gitlab_project_id") @db.Uuid
+  gitLabProject        GitLabProject?     @relation(fields: [gitLabProjectId], references: [id], onDelete: SetNull)
+  active               Boolean            @default(true)
+  lastSeenAt           DateTime           @map("last_seen_at")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+
+  @@unique([teamCityConnectionId, externalId])
+  @@index([gitLabProjectId, active])
+  @@index([normalizedRepository])
+  @@map("teamcity_vcs_roots")
+}
+
+model RegistryConnection {
+  id                         String        @id @default(uuid()) @db.Uuid
+  name                       String
+  registryType               RegistryType  @map("registry_type")
+  registryUrl                String        @map("registry_url")
+  namespace                  String
+  usernameCredentialId       String        @map("username_credential_id") @db.Uuid
+  usernameCredential         Credential    @relation("RegistryUsername", fields: [usernameCredentialId], references: [id])
+  passwordCredentialId       String        @map("password_credential_id") @db.Uuid
+  passwordCredential         Credential    @relation("RegistryPassword", fields: [passwordCredentialId], references: [id])
+  cloudSecretIdCredentialId  String?       @map("cloud_secret_id_credential_id") @db.Uuid
+  cloudSecretIdCredential    Credential?   @relation("RegistryCloudSecretId", fields: [cloudSecretIdCredentialId], references: [id])
+  cloudSecretKeyCredentialId String?       @map("cloud_secret_key_credential_id") @db.Uuid
+  cloudSecretKeyCredential   Credential?   @relation("RegistryCloudSecretKey", fields: [cloudSecretKeyCredentialId], references: [id])
+  verifySsl                  Boolean       @default(true) @map("verify_ssl")
+  enabled                    Boolean       @default(true)
+  lastTestAt                 DateTime?     @map("last_test_at")
+  lastTestStatus             String?       @map("last_test_status")
+  applications               Application[]
+  createdAt                  DateTime      @default(now()) @map("created_at")
+  updatedAt                  DateTime      @updatedAt @map("updated_at")
+
+  @@index([usernameCredentialId])
+  @@index([passwordCredentialId])
+  @@index([cloudSecretIdCredentialId])
+  @@index([cloudSecretKeyCredentialId])
+  @@map("registry_connections")
+}
+
+model Application {
+  id                    String                           @id @default(uuid()) @db.Uuid
+  gitLabProjectId       String                           @map("gitlab_project_id") @db.Uuid
+  gitLabProject         GitLabProject                    @relation(fields: [gitLabProjectId], references: [id])
+  name                  String
+  code                  String                           @unique
+  description           String?
+  releaseBranch         String                           @map("release_branch")
+  buildMode             BuildMode                        @default(BUILD_ALL) @map("build_mode")
+  autoBuildEnabled      Boolean                          @default(true) @map("auto_build_enabled")
+  teamCityConnectionId  String                           @map("teamcity_connection_id") @db.Uuid
+  teamCityConnection    TeamCityConnection               @relation(fields: [teamCityConnectionId], references: [id])
+  teamCityProjectId     String?                          @map("teamcity_project_id")
+  registryConnectionId  String?                          @map("registry_connection_id") @db.Uuid
+  registryConnection    RegistryConnection?              @relation(fields: [registryConnectionId], references: [id])
+  status                ApplicationStatus                @default(CONFIGURING)
+  createdById           String                           @map("created_by") @db.Uuid
+  createdBy             User                             @relation(fields: [createdById], references: [id])
+  components            Component[]
+  deploymentDirectories ApplicationDeploymentDirectory[]
+  provisionTasks        CiProvisionTask[]
+  teamCityResources     TeamCityResource[]
+  builds                Build[]
+  createdAt             DateTime                         @default(now()) @map("created_at")
+  updatedAt             DateTime                         @updatedAt @map("updated_at")
+
+  @@index([gitLabProjectId])
+  @@map("applications")
+}
+
+model Component {
+  id                   String             @id @default(uuid()) @db.Uuid
+  applicationId        String             @map("application_id") @db.Uuid
+  application          Application        @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  name                 String
+  code                 String
+  sourceDirectory      String             @map("source_directory")
+  dockerfilePath       String             @map("dockerfile_path")
+  buildContext         String             @map("build_context")
+  buildArgsJson        Json               @default("{}") @map("build_args_json")
+  imageRepository      String             @map("image_repository")
+  pathTriggerEnabled   Boolean            @default(false) @map("path_trigger_enabled")
+  pathIncludeRulesJson Json               @default("[]") @map("path_include_rules_json")
+  pathSharedRulesJson  Json               @default("[]") @map("path_shared_rules_json")
+  teamCityBuildTypeId  String?            @map("teamcity_build_type_id")
+  enabled              Boolean            @default(true)
+  teamCityResources    TeamCityResource[]
+  builds               Build[]
+  images               ImageVersion[]
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+
+  @@unique([applicationId, code])
+  @@map("components")
+}
+
+model CiProvisionTask {
+  id                  String            @id @default(uuid()) @db.Uuid
+  queueJobId          String?           @unique @map("queue_job_id")
+  applicationId       String            @map("application_id") @db.Uuid
+  application         Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  status              ProvisionStatus   @default(PENDING)
+  currentStep         String?           @map("current_step")
+  progressPercent     Int               @default(0) @map("progress_percent")
+  requestSnapshotJson Json              @default("{}") @map("request_snapshot_json")
+  resultJson          Json              @default("{}") @map("result_json")
+  errorMessage        String?           @map("error_message")
+  startedAt           DateTime?         @map("started_at")
+  finishedAt          DateTime?         @map("finished_at")
+  createdById         String            @map("created_by") @db.Uuid
+  createdBy           User              @relation(fields: [createdById], references: [id])
+  steps               CiProvisionStep[]
+  createdAt           DateTime          @default(now()) @map("created_at")
+
+  @@index([applicationId, status])
+  @@map("ci_provision_tasks")
+}
+
+model CiProvisionStep {
+  id                  String              @id @default(uuid()) @db.Uuid
+  taskId              String              @map("task_id") @db.Uuid
+  task                CiProvisionTask     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  stepCode            String              @map("step_code")
+  stepName            String              @map("step_name")
+  status              ProvisionStepStatus @default(PENDING)
+  externalResourceId  String?             @map("external_resource_id")
+  requestSummaryJson  Json                @default("{}") @map("request_summary_json")
+  responseSummaryJson Json                @default("{}") @map("response_summary_json")
+  errorMessage        String?             @map("error_message")
+  startedAt           DateTime?           @map("started_at")
+  finishedAt          DateTime?           @map("finished_at")
+
+  @@unique([taskId, stepCode])
+  @@map("ci_provision_steps")
+}
+
+model TeamCityResource {
+  id                 String                 @id @default(uuid()) @db.Uuid
+  applicationId      String                 @map("application_id") @db.Uuid
+  application        Application            @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  componentId        String?                @map("component_id") @db.Uuid
+  component          Component?             @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  resourceType       TeamCityResourceType   @map("resource_type")
+  resourceExternalId String                 @map("resource_external_id")
+  resourceName       String                 @map("resource_name")
+  managedByPlatform  Boolean                @default(true) @map("managed_by_platform")
+  lastVerifiedAt     DateTime?              @map("last_verified_at")
+  status             ExternalResourceStatus @default(ACTIVE)
+  metadataJson       Json                   @default("{}") @map("metadata_json")
+  createdAt          DateTime               @default(now()) @map("created_at")
+  updatedAt          DateTime               @updatedAt @map("updated_at")
+
+  @@unique([applicationId, resourceType, resourceExternalId])
+  @@map("teamcity_resources")
+}
+
+model Build {
+  id                  String         @id @default(uuid()) @db.Uuid
+  applicationId       String         @map("application_id") @db.Uuid
+  application         Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  componentId         String?        @map("component_id") @db.Uuid
+  component           Component?     @relation(fields: [componentId], references: [id], onDelete: SetNull)
+  teamCityBuildId     String         @map("teamcity_build_id")
+  teamCityBuildNumber String         @map("teamcity_build_number")
+  branch              String
+  commitSha           String         @map("commit_sha")
+  commitMessage       String?        @map("commit_message")
+  status              BuildStatus    @default(QUEUED)
+  triggerType         TriggerType    @map("trigger_type")
+  triggeredBy         String?        @map("triggered_by")
+  startedAt           DateTime?      @map("started_at")
+  finishedAt          DateTime?      @map("finished_at")
+  durationSeconds     Int?           @map("duration_seconds")
+  logUrl              String?        @map("log_url")
+  images              ImageVersion[]
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+
+  @@unique([teamCityBuildId])
+  @@index([applicationId, createdAt])
+  @@map("builds")
+}
+
+model ImageVersion {
+  id          String       @id @default(uuid()) @db.Uuid
+  componentId String       @map("component_id") @db.Uuid
+  component   Component    @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  buildId     String       @map("build_id") @db.Uuid
+  build       Build        @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  registry    String
+  namespace   String
+  repository  String
+  tag         String
+  digest      String?
+  fullName    String       @map("full_name")
+  commitSha   String       @map("commit_sha")
+  buildNumber String       @map("build_number")
+  status      ImageStatus  @default(AVAILABLE)
+  deployments Deployment[]
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  @@unique([componentId, fullName])
+  @@index([buildId])
+  @@map("image_versions")
+}
+
+model Server {
+  id                    String                           @id @default(uuid()) @db.Uuid
+  name                  String                           @unique
+  sshAlias              String?                          @unique @map("ssh_alias")
+  host                  String?
+  port                  Int                              @default(22)
+  username              String?
+  environment           String
+  authType              ServerAuthType                   @default(SSH_KEY) @map("auth_type")
+  credentialId          String?                          @map("credential_id") @db.Uuid
+  credential            Credential?                      @relation("ServerCredential", fields: [credentialId], references: [id])
+  publicKey             String?                          @map("public_key")
+  keyFingerprint        String?                          @map("key_fingerprint")
+  hostKeyFingerprint    String?                          @map("host_key_fingerprint")
+  status                ServerStatus                     @default(PENDING)
+  lastTestAt            DateTime?                        @map("last_test_at")
+  lastTestMessage       String?                          @map("last_test_message")
+  enabled               Boolean                          @default(true)
+  createdById           String                           @map("created_by") @db.Uuid
+  createdBy             User                             @relation(fields: [createdById], references: [id])
+  deployments           Deployment[]
+  deploymentDirectories ApplicationDeploymentDirectory[]
+  createdAt             DateTime                         @default(now()) @map("created_at")
+  updatedAt             DateTime                         @updatedAt @map("updated_at")
+
+  @@index([environment, status])
+  @@index([credentialId])
+  @@index([host, port])
+  @@map("servers")
+}
+
+model ApplicationDeploymentDirectory {
+  id            String                @id @default(uuid()) @db.Uuid
+  applicationId String                @map("application_id") @db.Uuid
+  application   Application           @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  serverId      String?               @map("server_id") @db.Uuid
+  server        Server?               @relation(fields: [serverId], references: [id])
+  deployments   Deployment[]
+  name          String
+  path          String
+  environment   DeploymentEnvironment @default(UAT)
+  enabled       Boolean               @default(true)
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+
+  @@unique([applicationId, environment, path])
+  @@index([applicationId, environment, enabled])
+  @@index([serverId])
+  @@map("application_deployment_directories")
+}
+
+model Deployment {
+  id                    String                         @id @default(uuid()) @db.Uuid
+  imageVersionId        String                         @map("image_version_id") @db.Uuid
+  imageVersion          ImageVersion                   @relation(fields: [imageVersionId], references: [id])
+  serverId              String                         @map("server_id") @db.Uuid
+  server                Server                         @relation(fields: [serverId], references: [id])
+  deploymentDirectoryId String                         @map("deployment_directory_id") @db.Uuid
+  deploymentDirectory   ApplicationDeploymentDirectory @relation(fields: [deploymentDirectoryId], references: [id])
+  serviceName           String                         @map("service_name")
+  imageVariable         String                         @default("DELIVERY_IMAGE") @map("image_variable")
+  imageFullName         String                         @map("image_full_name")
+  status                DeploymentStatus               @default(PENDING)
+  output                String?
+  errorMessage          String?                        @map("error_message")
+  startedAt             DateTime?                      @map("started_at")
+  finishedAt            DateTime?                      @map("finished_at")
+  createdById           String                         @map("created_by") @db.Uuid
+  createdBy             User                           @relation(fields: [createdById], references: [id])
+  createdAt             DateTime                       @default(now()) @map("created_at")
+  updatedAt             DateTime                       @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@index([serverId, createdAt])
+  @@index([imageVersionId])
+  @@map("deployments")
+}
+
+model AuditLog {
+  id           String      @id @default(uuid()) @db.Uuid
+  userId       String?     @map("user_id") @db.Uuid
+  user         User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action       String
+  resourceType String      @map("resource_type")
+  resourceId   String?     @map("resource_id")
+  requestId    String      @map("request_id")
+  beforeJson   Json?       @map("before_json")
+  afterJson    Json?       @map("after_json")
+  result       AuditResult
+  errorMessage String?     @map("error_message")
+  ipAddress    String?     @map("ip_address")
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  @@index([resourceType, resourceId])
+  @@index([requestId])
+  @@map("audit_logs")
+}

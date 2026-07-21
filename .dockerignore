@@ -1,0 +1,12 @@
+.git
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules
+**/node_modules
+**/dist
+release
+*.log
+docs
+delivery-platform-development-spec-*.md

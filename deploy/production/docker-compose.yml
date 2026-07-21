@@ -1,0 +1,98 @@
+name: delivery-hub
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: delivery-hub-api:${DELIVERY_HUB_VERSION}
+    command: sh -c "pnpm db:deploy && pnpm db:seed"
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER}
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: delivery-hub-api:${DELIVERY_HUB_VERSION}
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      DATABASE_URL: ${DATABASE_URL_DOCKER}
+      REDIS_URL: redis://redis:6379/0
+      API_PORT: 3000
+      WEB_BASE_URL: ${WEB_BASE_URL}
+      PUBLIC_CALLBACK_BASE_URL: ${PUBLIC_CALLBACK_BASE_URL}
+      DEFAULT_BUILD_STATUS_POLL_INTERVAL_SECONDS: ${DEFAULT_BUILD_STATUS_POLL_INTERVAL_SECONDS:-15}
+      BULLMQ_PREFIX: ${BULLMQ_PREFIX:-delivery-hub}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    image: delivery-hub-worker:${DELIVERY_HUB_VERSION}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER}
+      REDIS_URL: redis://redis:6379/0
+      WORKER_API_BASE_URL: http://api:3000
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      BULLMQ_PREFIX: ${BULLMQ_PREFIX:-delivery-hub}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  web:
+    image: delivery-hub-web:${DELIVERY_HUB_VERSION}
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

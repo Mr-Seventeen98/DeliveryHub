@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: ..
+      target: api
+    command: pnpm db:deploy
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      target: api
+    environment:
+      APP_ENV: ${APP_ENV}
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      DATABASE_URL: ${DATABASE_URL_DOCKER}
+      REDIS_URL: redis://redis:6379/0
+      API_PORT: ${API_PORT:-3000}
+      WEB_BASE_URL: ${WEB_BASE_URL}
+      PUBLIC_CALLBACK_BASE_URL: ${PUBLIC_CALLBACK_BASE_URL}
+      DEFAULT_BUILD_STATUS_POLL_INTERVAL_SECONDS: ${DEFAULT_BUILD_STATUS_POLL_INTERVAL_SECONDS:-15}
+      DEFAULT_SERVER_HEALTH_CHECK_INTERVAL_SECONDS: ${DEFAULT_SERVER_HEALTH_CHECK_INTERVAL_SECONDS:-15}
+      BULLMQ_PREFIX: ${BULLMQ_PREFIX:-delivery-hub}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: ..
+      target: worker
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER}
+      REDIS_URL: redis://redis:6379/0
+      WORKER_API_BASE_URL: http://api:3000
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      BULLMQ_PREFIX: ${BULLMQ_PREFIX:-delivery-hub}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      target: web
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

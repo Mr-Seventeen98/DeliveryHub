@@ -1,0 +1,46 @@
+node_modules/
+dist/
+coverage/
+
+# Local environment files. Commit templates only.
+.env
+.env.*
+!.env.example
+!**/.env.example
+!**/.env.*.example
+
+# Generated artifacts and caches.
+release/
+*.tar
+*.tar.gz
+*.tgz
+*.log
+*.tsbuildinfo
+.pnpm-debug.log
+.vite/
+apps/web/.vite/
+.cache/
+
+# Local data and backups. Prisma migration SQL remains tracked.
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql.gz
+backups/
+
+# Private key material.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+
+# OS and editor metadata.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
