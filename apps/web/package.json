@@ -15,7 +15,7 @@
     "@delivery-hub/shared-types": "workspace:*",
     "@tanstack/react-query": "^5.74.4",
     "@tanstack/react-router": "^1.120.5",
-    "lucide-react": "^0.468.0",
+    "lucide-react": "^1.30.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "yaml": "^2.9.0",
