@@ -15,6 +15,6 @@
     "@delivery-hub/shared-types": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "^3.1.2"
+    "vitest": "^4.1.10"
   }
 }
