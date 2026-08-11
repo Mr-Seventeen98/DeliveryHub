@@ -36,7 +36,7 @@ jobs:
           "$RUNNER_TEMP/gitleaks" git --redact --no-banner --verbose
 
       - name: Install pnpm
-        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
         with:
           version: 10.30.3
 
