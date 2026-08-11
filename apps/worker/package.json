@@ -15,7 +15,7 @@
     "@delivery-hub/shared-types": "workspace:*",
     "bullmq": "^5.53.1",
     "dotenv": "^16.5.0",
-    "ioredis": "^5.6.1",
+    "ioredis": "^6.0.0",
     "pino": "^9.7.0"
   },
   "devDependencies": {
