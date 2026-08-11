@@ -20,7 +20,7 @@
     "db:seed": "tsx prisma/seed.ts"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
+    "@types/node": "^26.2.0",
     "prettier": "^3.5.3",
     "prisma": "^6.7.0",
     "tsx": "^4.19.3",
