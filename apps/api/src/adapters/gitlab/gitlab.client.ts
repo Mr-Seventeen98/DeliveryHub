@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { ExternalApiException } from "../external-api.exception";
 import { ExternalHttpClient } from "../external-http.client";
+import { createHash } from "node:crypto";
 
 export interface GitLabClientConfig {
   apiUrl: string;
@@ -214,6 +215,49 @@ export class GitLabClient {
       }
       if (typeof response.body !== "string") {
         throw new Error("GitLab repository file response is not text");
+      }
+      // 部分自托管 GitLab 代理未处理 Workhorse 的 git-blob 响应，raw 会返回空的 200。
+      // 只有上游明确声明非空文件时才补取标准 JSON API；合法空文件仍保持原样。
+      if (
+        response.body === "" &&
+        Number(response.headers?.["x-gitlab-size"]) > 0
+      ) {
+        const commit = response.headers["x-gitlab-commit-id"];
+        if (!commit || !/^[a-f0-9]{40,64}$/.test(commit))
+          throw new Error("GitLab empty raw response has no immutable commit");
+        // 锁到第一次响应的提交，防止分支在两次请求之间前移而读到另一份配置。
+        const fallbackQuery = new URLSearchParams({ ref: commit });
+        const fallback = await this.http.request<{
+          encoding: string;
+          content: string;
+          size: number;
+          content_sha256: string;
+          commit_id: string;
+        }>(
+          `${config.apiUrl.replace(/\/$/, "")}/projects/${projectId}/repository/files/${encodedPath}?${fallbackQuery}`,
+          {
+            headers: { "PRIVATE-TOKEN": config.token },
+            verifySsl: config.verifySsl,
+          },
+        );
+        const file = fallback.body;
+        if (
+          fallback.statusCode !== 200 ||
+          file?.encoding !== "base64" ||
+          typeof file.content !== "string"
+        )
+          throw new Error("GitLab repository file fallback is invalid");
+        const bytes = Buffer.from(file.content, "base64");
+        const digest = createHash("sha256").update(bytes).digest("hex");
+        if (
+          file.commit_id !== commit ||
+          bytes.length !== file.size ||
+          file.size !== Number(response.headers["x-gitlab-size"]) ||
+          digest !== file.content_sha256 ||
+          digest !== response.headers["x-gitlab-content-sha256"]
+        )
+          throw new Error("GitLab repository file fallback identity mismatch");
+        return bytes.toString("utf8");
       }
       return response.body;
     } catch (error) {

@@ -1,8 +1,84 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExternalHttpClient } from "../external-http.client";
 import { GitLabClient } from "./gitlab.client";
+import { createHash } from "node:crypto";
 
 describe("GitLabClient", () => {
+  // 保护真实自托管代理的空 raw 场景，同时拒绝补取过程中发生的文件身份漂移。
+  it.each([false, true])(
+    "recovers an empty Workhorse raw response with pinned identity (mismatch=%s)",
+    async (mismatch) => {
+      const content = "version: 1\n";
+      const commit = "a".repeat(40);
+      const digest = createHash("sha256").update(content).digest("hex");
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          body: "",
+          headers: {
+            "x-gitlab-size": String(Buffer.byteLength(content)),
+            "x-gitlab-commit-id": commit,
+            "x-gitlab-content-sha256": digest,
+          },
+        })
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          body: {
+            encoding: "base64",
+            content: Buffer.from(content).toString("base64"),
+            size: Buffer.byteLength(content),
+            content_sha256: mismatch ? "b".repeat(64) : digest,
+            commit_id: commit,
+          },
+        });
+      const client = new GitLabClient({
+        request,
+      } as unknown as ExternalHttpClient);
+      const result = client.getRepositoryFileRaw(
+        {
+          apiUrl: "https://gitlab.example/api/v4",
+          token: "secret",
+          verifySsl: true,
+        },
+        42,
+        "main",
+        "delivery.yaml",
+      );
+      if (mismatch)
+        await expect(result).rejects.toThrow(
+          "GitLab repository file lookup failed",
+        );
+      else await expect(result).resolves.toBe(content);
+      expect(request.mock.calls[1]?.[0]).toContain("?ref=" + commit);
+    },
+  );
+
+  it("keeps a legitimate empty repository file empty without fallback", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValue({
+        statusCode: 200,
+        body: "",
+        headers: { "x-gitlab-size": "0" },
+      });
+    const client = new GitLabClient({
+      request,
+    } as unknown as ExternalHttpClient);
+    await expect(
+      client.getRepositoryFileRaw(
+        {
+          apiUrl: "https://gitlab.example/api/v4",
+          token: "secret",
+          verifySsl: true,
+        },
+        42,
+        "main",
+        "empty.txt",
+      ),
+    ).resolves.toBe("");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it("uses the private token header and normalized API URL", async () => {
     const request = vi.fn().mockResolvedValue({
       statusCode: 200,

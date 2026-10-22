@@ -578,7 +578,9 @@ export class TeamCityClient {
                 property: [
                   {
                     name: "branchFilter",
-                    value: `+:${normalizeTeamCityBranch(releaseBranch)}\n-:*`,
+                    // 所选发布分支也是 VCS Root 的默认分支，TC 触发器以 <default> 识别它。
+                    // 同时保留精确逻辑名；只写 refs/heads/... 会漏掉默认分支上的提交。
+                    value: `-:*\n+:<default>\n+:${normalizeTeamCityBranch(releaseBranch)}`,
                   },
                   { name: "perCheckinTriggering", value: "true" },
                   { name: "groupCheckinsByCommitter", value: "true" },
@@ -733,7 +735,8 @@ export class TeamCityClient {
     for (const [name, value] of Object.entries({
       // 脚本核验 git HEAD 和干净工作区，必须保留 .git，不能退回服务器导出模式。
       checkoutMode: "ON_AGENT",
-      maxRunningBuilds: "1",
+      // REST BuildType 的并发设置名称与 UI 文案不同，服务端使用 maximumNumberOfBuilds。
+      maximumNumberOfBuilds: "1",
       artifactRules:
         ".artifacts/ci/%teamcity.build.id%/result.json => ci\n.artifacts/ci/%teamcity.build.id%/reports/** => reports",
       executionTimeoutMin: "90",
@@ -873,7 +876,8 @@ export class TeamCityClient {
           method: "PUT",
           headers: {
             Authorization: `Bearer ${config.token}`,
-            Accept: "application/json",
+            // settings/name 等标量接口只返回 text/plain；请求 JSON 会被真实 TC 拒绝为 406。
+            Accept: "text/plain",
             "Content-Type": "text/plain",
           },
           body,

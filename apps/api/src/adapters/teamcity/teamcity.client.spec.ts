@@ -236,7 +236,7 @@ describe("TeamCityClient", () => {
       expect.arrayContaining([
         {
           name: "branchFilter",
-          value: "+:refs/heads/main\n-:*",
+          value: "-:*\n+:<default>\n+:refs/heads/main",
         },
         {
           name: "perCheckinTriggering",
@@ -282,7 +282,10 @@ describe("TeamCityClient", () => {
       expect.objectContaining({
         method: "PUT",
         body: "api-new",
-        headers: expect.objectContaining({ "Content-Type": "text/plain" }),
+        headers: expect.objectContaining({
+          "Content-Type": "text/plain",
+          Accept: "text/plain",
+        }),
       }),
     );
     expect(request).toHaveBeenNthCalledWith(
@@ -305,7 +308,7 @@ describe("TeamCityClient", () => {
     );
     expect(triggerBody.trigger[0].properties.property).toContainEqual({
       name: "branchFilter",
-      value: "+:refs/heads/release\n-:*",
+      value: "-:*\n+:<default>\n+:refs/heads/release",
     });
     expect(triggerBody.trigger[0].properties.property).toContainEqual({
       name: "perCheckinTriggering",
