@@ -2,7 +2,12 @@
 # SDK 摘要来自首次远程验证的实际拉取结果；Node 下载时再核对官方 SHA256 清单。
 FROM mcr.microsoft.com/dotnet/sdk:10.0.401-noble@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317
 ARG NODE_VERSION=24.15.0
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# 可为现场网络选择 Ubuntu 镜像站；仍由 Ubuntu 原有签名密钥验证软件包。
+ARG UBUNTU_MIRROR=""
+RUN if [ -n "$UBUNTU_MIRROR" ]; then sed -i -E "s~https?://(archive|security)\.ubuntu\.com/ubuntu/?~${UBUNTU_MIRROR}~g" /etc/apt/sources.list.d/ubuntu.sources; fi \
+    && apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
+# 索引与安装分层，现场导入的可信缓存可在索引更新后恢复，避免 docker-clean 钩子提前删除。
+RUN DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
     openjdk-21-jre-headless python3 git openssh-client curl ca-certificates unzip xz-utils \
     libglib2.0-0t64 libnss3 libnspr4 libdbus-1-3 libatk1.0-0t64 libatk-bridge2.0-0t64 \
     libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \

@@ -2,6 +2,8 @@
 
 `integrated-platform-agent.Dockerfile` 提供 Node 24、pnpm 10.30.3、.NET SDK 10.0.401、Java 21 和 Chromium 系统依赖。它不包含应用发布逻辑。TeamCity 项目、Git 仓库绑定、六个阶段和 VCS 提交触发器仍由 DeliveryHub 的仓库流水线接入流程创建。
 
+默认使用 Ubuntu 官方源。现场网络较慢时，可在构建时传入 `--build-arg UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu/`；APT 继续使用 Ubuntu 签名和软件包摘要验证，不关闭证书检查。索引更新与安装分层，复用缓存时应在索引更新后恢复软件包，避免基础镜像的清理钩子提前删除缓存。
+
 启动前从当前 TeamCity 的 `/update/buildAgent.zip` 下载 Agent，解压到专用目录；不要复用其他 Agent 的授权配置。该目录的 `conf/buildAgent.properties` 需配置 `serverUrl`、唯一 `name`，以及独立的 `workDir`、`tempDir`、`systemDir`。配置文件可能被 Agent 写入授权令牌，应限制目录和文件权限。
 
 将融合平台 `scripts/ci/export_assets.py` 导出的资源包同步到专用资产目录，并通过 Agent 的 `env.CI_ASSET_SOURCE` 指向它。资源摘要由仓库中的资产锁再次验证，不需要把地形文件提交到 Git。建议设置 `env.TZ=Asia/Shanghai` 与已有测试环境一致。

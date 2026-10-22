@@ -3,6 +3,32 @@ import type { ExternalHttpClient } from "../external-http.client";
 import { TeamCityClient } from "./teamcity.client";
 
 describe("TeamCityClient", () => {
+  // 真实服务器的标量设置接口拒绝 JSON Accept 与不存在的并发字段；保留该契约防止退回仅 Mock 成功。
+  it("uses supported scalar settings and text responses for repository pipelines", async () => {
+    const request = vi.fn().mockResolvedValue({ statusCode: 200, body: "1" });
+    const client = new TeamCityClient({
+      request,
+    } as unknown as ExternalHttpClient);
+    await client.configureRepositoryPipeline(
+      { baseUrl: "https://teamcity.example", token: "secret", verifySsl: true },
+      "Repo_CI",
+    );
+    expect(request).toHaveBeenCalledWith(
+      "https://teamcity.example/app/rest/buildTypes/id:Repo_CI/settings/maximumNumberOfBuilds",
+      expect.objectContaining({
+        body: "1",
+        headers: expect.objectContaining({
+          Accept: "text/plain",
+          "Content-Type": "text/plain",
+        }),
+      }),
+    );
+    expect(
+      request.mock.calls.some(([url]) =>
+        String(url).endsWith("/settings/maxRunningBuilds"),
+      ),
+    ).toBe(false);
+  });
   // 实际脚本依赖 .git；检查请求契约，防止 TC 默认自动模式在 Agent 缺 Git 时静默回退。
   it("仓库流水线强制 Agent checkout，并归档可补同步的结果", async () => {
     const request = vi.fn().mockResolvedValue({ statusCode: 200, body: "" });
