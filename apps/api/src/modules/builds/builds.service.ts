@@ -56,10 +56,13 @@ export class BuildsService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
-    this.pollTimer = setInterval(
-      () => void this.syncAll(),
-      this.pollIntervalMs,
-    );
+    this.pollTimer = setInterval(() => {
+      // 轮询属于后台生命周期，数据库短时断连不能变成未处理拒绝并终止整个 API。
+      // syncAll 的 finally 仍释放并发标记，下一轮恢复同步；手动同步接口继续返回原错误。
+      void this.syncAll().catch(() => {
+        this.logger.warn("Build sync cycle failed; retrying on the next poll");
+      });
+    }, this.pollIntervalMs);
     this.pollTimer.unref();
   }
 
