@@ -1,5 +1,6 @@
 import { ServerStatus } from "@prisma/client";
-import { describe, expect, it, vi } from "vitest";
+import { Logger } from "@nestjs/common";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ServersService } from "./servers.service";
 
 function createService(testAlias: () => Promise<{ reachable: true }>) {
@@ -41,6 +42,52 @@ function createService(testAlias: () => Promise<{ reachable: true }>) {
 }
 
 describe("ServersService automatic health checks", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    { name: "health", interval: 60_000, label: "Server health refresh" },
+    { name: "ssh", interval: 5 * 60_000, label: "SSH Config synchronization" },
+  ])(
+    "contains a rejected $name timer and retries after recovery",
+    async ({ name, interval, label }) => {
+      vi.useFakeTimers();
+      const warn = vi
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => undefined);
+      const { service } = createService(() =>
+        Promise.resolve({ reachable: true }),
+      );
+      // 仅替代内部异步入口以隔离数据库/SSH；仍由真实定时器触发，不改变生产方法的私有可见性。
+      const scheduledTasks = service as unknown as {
+        refreshHealth: () => Promise<void>;
+        synchronizeSshConfig: (userId: string) => Promise<string[]>;
+      };
+      const health = vi
+        .spyOn(scheduledTasks, "refreshHealth")
+        .mockResolvedValue(undefined);
+      const sync = vi
+        .spyOn(scheduledTasks, "synchronizeSshConfig")
+        .mockResolvedValue([]);
+      await service.onModuleInit();
+      const task = name === "health" ? health : sync;
+      task.mockRejectedValueOnce(new Error("fixture database disconnect"));
+      try {
+        // 使用真实调度入口而非直接调用 catch；未处理拒绝会让 Vitest 失败，恢复后下一轮必须再次执行。
+        await vi.advanceTimersByTimeAsync(interval);
+        expect(warn).toHaveBeenCalledWith(
+          `${label} failed; retrying on the next scheduled check`,
+        );
+        await vi.advanceTimersByTimeAsync(interval);
+        expect(task).toHaveBeenCalledTimes(3);
+      } finally {
+        service.onModuleDestroy();
+      }
+    },
+  );
+
   it("lists cached targets without reparsing SSH Config", async () => {
     const { service, prisma } = createService(() =>
       Promise.resolve({ reachable: true }),

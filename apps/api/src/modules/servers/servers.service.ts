@@ -83,12 +83,17 @@ export class ServersService implements OnModuleInit, OnModuleDestroy {
       );
     }
     this.healthCheckTimer = setInterval(
-      () => void this.refreshHealth(),
+      () =>
+        this.runBackground(() => this.refreshHealth(), "Server health refresh"),
       this.healthCheckIntervalMs,
     );
     this.healthCheckTimer.unref();
     this.sshConfigSyncTimer = setInterval(
-      () => void this.synchronizeSshConfig(user.id),
+      () =>
+        this.runBackground(
+          () => this.synchronizeSshConfig(user.id),
+          "SSH Config synchronization",
+        ),
       5 * 60_000,
     );
     this.sshConfigSyncTimer.unref();
@@ -101,6 +106,17 @@ export class ServersService implements OnModuleInit, OnModuleDestroy {
     if (this.sshConfigWatchDebounce) clearTimeout(this.sshConfigWatchDebounce);
     this.sshConfigWatcher?.close();
     this.statusEvents.complete();
+  }
+
+  /**
+   * 定时器与文件监听没有 await 调用方，必须在调度边界接住数据库暂时断连等拒绝，避免结束整个 API。
+   * 原异步方法仍保留失败语义及 in-flight 锁释放，人工操作继续收到错误；后台下一轮会重新尝试。
+   * 日志只写任务名，避免把数据库请求、连接信息或发现的主机配置带入后台告警。
+   */
+  private runBackground(task: () => Promise<unknown>, label: string): void {
+    void task().catch(() => {
+      this.logger.warn(`${label} failed; retrying on the next scheduled check`);
+    });
   }
 
   list() {
@@ -405,7 +421,11 @@ export class ServersService implements OnModuleInit, OnModuleDestroy {
           if (this.sshConfigWatchDebounce)
             clearTimeout(this.sshConfigWatchDebounce);
           this.sshConfigWatchDebounce = setTimeout(
-            () => void this.synchronizeSshConfig(this.activeUserId!),
+            () =>
+              this.runBackground(
+                () => this.synchronizeSshConfig(this.activeUserId!),
+                "SSH Config synchronization",
+              ),
             300,
           );
         },
