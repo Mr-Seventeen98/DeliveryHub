@@ -3,6 +3,31 @@ import type { ExternalHttpClient } from "../external-http.client";
 import { TeamCityClient } from "./teamcity.client";
 
 describe("TeamCityClient", () => {
+  // 实际脚本依赖 .git；检查请求契约，防止 TC 默认自动模式在 Agent 缺 Git 时静默回退。
+  it("仓库流水线强制 Agent checkout，并归档可补同步的结果", async () => {
+    const request = vi.fn().mockResolvedValue({ statusCode: 200, body: "" });
+    const client = new TeamCityClient({
+      request,
+    } as unknown as ExternalHttpClient);
+    await client.configureRepositoryPipeline(
+      {
+        baseUrl: "https://teamcity.example",
+        token: "fixture",
+        verifySsl: true,
+      },
+      "RepositoryCI",
+    );
+    expect(request).toHaveBeenCalledWith(
+      expect.stringContaining("/settings/checkoutMode"),
+      expect.objectContaining({ method: "PUT", body: "ON_AGENT" }),
+    );
+    expect(request).toHaveBeenCalledWith(
+      expect.stringContaining("/settings/artifactRules"),
+      expect.objectContaining({
+        body: expect.stringContaining("result.json => ci"),
+      }),
+    );
+  });
   it("sends bearer authentication and requests JSON", async () => {
     const request = vi.fn().mockResolvedValue({
       statusCode: 200,
@@ -186,7 +211,9 @@ describe("TeamCityClient", () => {
         name: "Build and Push Image",
         projectId: "Delivery_Api",
         parameters: [{ name: "env.DOCKERFILE_PATH", value: "api/Dockerfile" }],
-        steps: [{ id: "build_image", name: "Build image", script: "docker build ." }],
+        steps: [
+          { id: "build_image", name: "Build image", script: "docker build ." },
+        ],
         autoBuildEnabled: true,
         releaseBranch: "main",
       },
@@ -367,6 +394,12 @@ describe("TeamCityClient", () => {
           name: "Push image",
           script: "docker login && docker push image",
         },
+        {
+          id: "repository_report",
+          name: "Report and cleanup",
+          script: "python3 scripts/ci/pipeline.py --stage report",
+          executionMode: "execute_always",
+        },
       ],
     );
 
@@ -375,6 +408,13 @@ describe("TeamCityClient", () => {
       expect.objectContaining({
         method: "PUT",
         body: expect.stringContaining("docker login && docker push image"),
+      }),
+    );
+    // HTTP 契约使用 runner 参数常量，防止只测试内部 UI 标签而遗漏取消后的清理模式。
+    expect(request).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        body: expect.stringContaining('"value":"execute_always"'),
       }),
     );
   });

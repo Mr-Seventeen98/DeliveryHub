@@ -55,6 +55,7 @@ export interface TeamCityBuildTypeResponse {
 }
 
 export interface TeamCityBuildResponse {
+  buildType?: { id?: string };
   id: number;
   number?: string;
   status?: "SUCCESS" | "FAILURE" | "UNKNOWN";
@@ -64,7 +65,12 @@ export interface TeamCityBuildResponse {
   waitReason?: string;
   compatibleAgents?: {
     count?: number;
-    agent?: Array<{ id?: number; name?: string; connected?: boolean; enabled?: boolean }>;
+    agent?: Array<{
+      id?: number;
+      name?: string;
+      connected?: boolean;
+      enabled?: boolean;
+    }>;
   };
   webUrl?: string;
   queuedDate?: string;
@@ -126,6 +132,7 @@ export interface TeamCityCreateBuildTypeInput {
     id: string;
     name: string;
     script: string;
+    executionMode?: string;
   }>;
   autoBuildEnabled: boolean;
   releaseBranch: string;
@@ -192,10 +199,14 @@ export class TeamCityClient {
         },
       );
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw new ExternalApiException("teamcity", "TeamCity connection failed", {
-          statusCode: response.statusCode,
-          response: summarizeResponse(response.body),
-        });
+        throw new ExternalApiException(
+          "teamcity",
+          "TeamCity connection failed",
+          {
+            statusCode: response.statusCode,
+            response: summarizeResponse(response.body),
+          },
+        );
       }
       return response.body;
     } catch (error) {
@@ -580,9 +591,7 @@ export class TeamCityClient {
     };
   }
 
-  private buildStepsPayload(
-    steps: TeamCityCreateBuildTypeInput["steps"],
-  ): {
+  private buildStepsPayload(steps: TeamCityCreateBuildTypeInput["steps"]): {
     step: Array<{
       id: string;
       name: string;
@@ -599,7 +608,10 @@ export class TeamCityClient {
           property: [
             { name: "use.custom.script", value: "true" },
             { name: "script.content", value: step.script },
-            { name: "teamcity.step.mode", value: "default" },
+            {
+              name: "teamcity.step.mode",
+              value: step.executionMode ?? "default",
+            },
           ],
         },
       })),
@@ -668,6 +680,7 @@ export class TeamCityClient {
   ): Promise<TeamCityBuildResponse | null> {
     const fields = [
       "id",
+      "buildType(id)",
       "number",
       "status",
       "state",
@@ -697,7 +710,7 @@ export class TeamCityClient {
   ): Promise<TeamCityBuildResponse[]> {
     const fields = [
       "count",
-      "build(id,number,status,state,branchName,webUrl,queuedDate,startDate,finishDate,canceledInfo,revisions(revision(version)),resultingProperties(property(name,value)))",
+      "build(id,buildType(id),number,status,state,branchName,webUrl,queuedDate,startDate,finishDate,canceledInfo,revisions(revision(version)),resultingProperties(property(name,value)))",
     ].join(",");
     const query = new URLSearchParams({
       locator: `buildType:(id:${buildTypeId}),count:${count},defaultFilter:false`,
@@ -709,6 +722,40 @@ export class TeamCityClient {
       "TeamCity build list failed",
     );
     return response?.build ?? [];
+  }
+
+  /** 仓库模式固定单任务串行执行，并保留结果 JSON 供回调丢失后的只读补登记。 */
+  async configureRepositoryPipeline(
+    config: TeamCityClientConfig,
+    buildTypeId: string,
+  ): Promise<void> {
+    const base = `/app/rest/buildTypes/id:${encodeURIComponent(buildTypeId)}`;
+    for (const [name, value] of Object.entries({
+      // 脚本核验 git HEAD 和干净工作区，必须保留 .git，不能退回服务器导出模式。
+      checkoutMode: "ON_AGENT",
+      maxRunningBuilds: "1",
+      artifactRules:
+        ".artifacts/ci/%teamcity.build.id%/result.json => ci\n.artifacts/ci/%teamcity.build.id%/reports/** => reports",
+      executionTimeoutMin: "90",
+    }))
+      await this.putText(
+        config,
+        `${base}/settings/${name}`,
+        value,
+        "TeamCity pipeline settings update failed",
+      );
+  }
+
+  /** 内容由当前受管 Build Configuration 生成；调用方仍需验证提交、配置和远端镜像摘要。 */
+  async getPipelineResult(
+    config: TeamCityClientConfig,
+    buildId: string,
+  ): Promise<unknown | null> {
+    return this.getOptional(
+      config,
+      `/app/rest/builds/id:${encodeURIComponent(buildId)}/artifacts/content/ci/result.json`,
+      "TeamCity pipeline artifact lookup failed",
+    );
   }
 
   private async getOptional<T>(

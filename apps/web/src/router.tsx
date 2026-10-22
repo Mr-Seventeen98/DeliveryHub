@@ -531,6 +531,7 @@ interface GitLabConnectionForm {
 }
 
 interface CiCdComponentDraft {
+  code?: string;
   id: string;
   name: string;
   sourceDirectory: string;
@@ -541,6 +542,10 @@ interface CiCdComponentDraft {
 }
 
 interface CiCdSetupDraft {
+  /** 仓库模式只创建一次整套任务；旧草稿缺省仍为组件 Docker 模式。 */
+  ciExecutionMode?: "COMPONENT_DOCKER" | "REPOSITORY_PIPELINE";
+  pipelineDefinitionPath?: string;
+  registryConnectionId?: string;
   releaseBranch: string;
   teamCityConnectionId: string;
   teamCityGroupMode: "existing" | "new";
@@ -580,6 +585,9 @@ interface ExistingCiConfigurationResult {
   configured: boolean;
   configuration: {
     applicationId: string;
+    ciExecutionMode: "COMPONENT_DOCKER" | "REPOSITORY_PIPELINE";
+    pipelineDefinitionPath: string | null;
+    registryConnectionId: string | null;
     releaseBranch: string;
     teamCityConnectionId: string;
     teamCityGroupId: string;
@@ -609,6 +617,19 @@ interface GitLabDockerfileOption {
 }
 
 interface RepositoryScanResult {
+  pipeline?: {
+    sha256: string;
+    definition: {
+      components: Array<{
+        code: string;
+        name: string;
+        dockerfile: string;
+        context: string;
+        imageRepository: string;
+      }>;
+    };
+  };
+  pipelineError?: string;
   ref: string;
   featureFiles: Array<{ path: string; kind: string }>;
   componentSuggestions: Array<{
@@ -893,6 +914,8 @@ function CiCdSetupFlow({
   const [draft, setDraft] = useState<CiCdSetupDraft>(() => {
     return {
       releaseBranch: project.defaultBranch || "main",
+      ciExecutionMode: "COMPONENT_DOCKER",
+      pipelineDefinitionPath: "delivery.yaml",
       teamCityConnectionId:
         project.teamCityVcsRoots[0]?.teamCityConnection.id ??
         teamCityConnections[0]?.id ??
@@ -918,6 +941,10 @@ function CiCdSetupFlow({
     if (configuration) {
       setDraft({
         releaseBranch: configuration.releaseBranch,
+        ciExecutionMode: configuration.ciExecutionMode,
+        pipelineDefinitionPath:
+          configuration.pipelineDefinitionPath ?? "delivery.yaml",
+        registryConnectionId: configuration.registryConnectionId ?? undefined,
         teamCityConnectionId: configuration.teamCityConnectionId,
         teamCityGroupMode: "existing",
         teamCityGroupId: configuration.teamCityGroupId,
@@ -1003,6 +1030,43 @@ function CiCdSetupFlow({
   const selectedTeamCity = teamCityConnections.find(
     (connection) => connection.id === draft.teamCityConnectionId,
   );
+  const registries = useQuery({
+    queryKey: ["pipeline-registries"],
+    queryFn: () =>
+      apiRequest<
+        Array<{
+          id: string;
+          name: string;
+          registryUrl: string;
+          namespace: string;
+          enabled: boolean;
+        }>
+      >("/integrations/registries"),
+  });
+  const pipelineMode = draft.ciExecutionMode === "REPOSITORY_PIPELINE";
+  const selectedRegistry = registries.data?.find(
+    (item) => item.id === draft.registryConnectionId,
+  );
+
+  /** 导入当前分支的权威清单；保存时后端还会重新读取，禁止浏览器私自删减组件。 */
+  function selectRepositoryPipeline(): void {
+    const pipeline = repositoryScan.data?.pipeline;
+    if (!pipeline) return;
+    setDraft((current) => ({
+      ...current,
+      ciExecutionMode: "REPOSITORY_PIPELINE",
+      pipelineDefinitionPath: "delivery.yaml",
+      components: pipeline.definition.components.map((item) => ({
+        id: item.code,
+        code: item.code,
+        name: item.name,
+        sourceDirectory: item.context,
+        dockerfilePath: item.dockerfile,
+        buildContext: item.context,
+        imageRepository: item.imageRepository,
+      })),
+    }));
+  }
   const selectedTeamCityGroup = teamCityProjects.data?.items.find(
     (item) => item.id === draft.teamCityGroupId,
   );
@@ -1138,6 +1202,9 @@ function CiCdSetupFlow({
           method: "POST",
           body: JSON.stringify({
             gitLabProjectId: project.id,
+            ciExecutionMode: draft.ciExecutionMode ?? "COMPONENT_DOCKER",
+            pipelineDefinitionPath: draft.pipelineDefinitionPath,
+            registryConnectionId: draft.registryConnectionId || undefined,
             teamCityConnectionId: draft.teamCityConnectionId,
             releaseBranch: draft.releaseBranch,
             teamCityGroupMode: draft.teamCityGroupMode,
@@ -1153,6 +1220,8 @@ function CiCdSetupFlow({
             runFirstBuild: draft.runFirstBuild,
             components: draft.components.map((component) => ({
               name: component.name.trim(),
+              code: component.code,
+              buildContext: component.buildContext,
               dockerfilePath: component.dockerfilePath,
               imageRepository: component.imageRepository.trim(),
             })),
@@ -1272,7 +1341,9 @@ function CiCdSetupFlow({
             <div>
               <span>镜像仓库</span>
               <strong>
-                {FIXED_IMAGE_REGISTRY}/{FIXED_IMAGE_NAMESPACE}
+                {pipelineMode && selectedRegistry
+                  ? `${selectedRegistry.registryUrl}/${selectedRegistry.namespace}`
+                  : `${FIXED_IMAGE_REGISTRY}/${FIXED_IMAGE_NAMESPACE}`}
               </strong>
             </div>
             <div>
@@ -1285,9 +1356,11 @@ function CiCdSetupFlow({
           </div>
           <div className="confirmation-components">
             <h3>
-              {editing
-                ? `将更新 ${existingComponentCount} 个、添加 ${newComponentCount} 个 CI/CD 项目`
-                : `将创建 ${draft.components.length} 个 CI/CD 项目`}
+              {pipelineMode
+                ? `将配置 1 条整套流水线，包含 ${draft.components.length} 个组件`
+                : editing
+                  ? `将更新 ${existingComponentCount} 个、添加 ${newComponentCount} 个 CI/CD 项目`
+                  : `将创建 ${draft.components.length} 个 CI/CD 项目`}
             </h3>
             {draft.components.map((component) => (
               <div key={component.id}>
@@ -1483,13 +1556,15 @@ function CiCdSetupFlow({
                 </select>
               </label>
             )}
-            <div className="fixed-registry-summary">
-              <span>固定镜像推送地址</span>
-              <strong>
-                {FIXED_IMAGE_REGISTRY}/{FIXED_IMAGE_NAMESPACE}
-              </strong>
-              <small>沿用现有 TeamCity 配置，接入项目时无需修改。</small>
-            </div>
+            {!pipelineMode ? (
+              <div className="fixed-registry-summary">
+                <span>固定镜像推送地址</span>
+                <strong>
+                  {FIXED_IMAGE_REGISTRY}/{FIXED_IMAGE_NAMESPACE}
+                </strong>
+                <small>沿用现有 TeamCity 配置，接入项目时无需修改。</small>
+              </div>
+            ) : null}
           </div>
           {existingConfiguration.isError ? (
             <div className="error-message" role="alert">
@@ -1502,10 +1577,85 @@ function CiCdSetupFlow({
               当前配置会自动保存为本机草稿，下次打开可继续编辑。
             </div>
           ) : null}
+          <div className="omp-alert neutral">
+            <label>
+              <span>构建方式</span>
+              <select
+                aria-label="构建方式"
+                value={draft.ciExecutionMode ?? "COMPONENT_DOCKER"}
+                onChange={(event) =>
+                  event.target.value === "REPOSITORY_PIPELINE"
+                    ? selectRepositoryPipeline()
+                    : setDraft((current) => ({
+                        ...current,
+                        ciExecutionMode: "COMPONENT_DOCKER",
+                        components: [],
+                      }))
+                }
+              >
+                <option value="COMPONENT_DOCKER">
+                  原有方式：按 Dockerfile 分别构建
+                </option>
+                <option
+                  value="REPOSITORY_PIPELINE"
+                  disabled={!repositoryScan.data?.pipeline}
+                >
+                  仓库流水线：整套测试、构建与推送
+                </option>
+              </select>
+            </label>
+            {repositoryScan.data?.pipelineError ? (
+              <p role="alert">
+                delivery.yaml：{repositoryScan.data.pipelineError}
+              </p>
+            ) : null}
+            {pipelineMode ? (
+              <>
+                <p>
+                  读取 delivery.yaml
+                  的完整组件清单，仅生成制品；不执行自动部署。
+                </p>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={selectRepositoryPipeline}
+                >
+                  重新读取当前分支配置
+                </button>
+                <label>
+                  <span>TCR 连接</span>
+                  <select
+                    aria-label="TCR 连接"
+                    required
+                    value={draft.registryConnectionId ?? ""}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        registryConnectionId: event.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">请选择已启用的 TCR 连接</option>
+                    {registries.data
+                      ?.filter((item) => item.enabled)
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} · {item.registryUrl}/{item.namespace}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              </>
+            ) : null}
+          </div>
           <div className="component-section-head">
             <div>
               <strong>Dockerfile 项目</strong>
-              <span>每添加一个 Dockerfile，就会创建一个独立 CI/CD 项目。</span>
+              <span>
+                {pipelineMode
+                  ? "同一次构建使用同一提交，全部测试通过后统一推送。"
+                  : "每添加一个 Dockerfile，就会创建一个独立 CI/CD 项目。"}
+              </span>
             </div>
             <div className="component-section-actions">
               <span className="selection-count">
@@ -1514,6 +1664,7 @@ function CiCdSetupFlow({
               <button
                 className="secondary-button"
                 onClick={openDockerfilePicker}
+                disabled={pipelineMode}
                 type="button"
               >
                 <Plus size={15} />
@@ -1528,7 +1679,7 @@ function CiCdSetupFlow({
                   CI/CD 项目 {index + 1}
                   {component.existing ? "（已配置）" : "（新增）"}
                 </legend>
-                {!component.existing ? (
+                {!component.existing && !pipelineMode ? (
                   <button
                     aria-label={`取消选择 ${component.dockerfilePath}`}
                     className="component-remove"
@@ -1549,11 +1700,25 @@ function CiCdSetupFlow({
                       }
                       required
                       value={component.name}
+                      readOnly={pipelineMode}
                     />
                   </label>
                   <label>
                     <span>Dockerfile</span>
                     <input readOnly value={component.dockerfilePath} />
+                  </label>
+                  <label className="full-column">
+                    <span>构建上下文</span>
+                    <input
+                      value={component.buildContext}
+                      readOnly={pipelineMode}
+                      onChange={(event) =>
+                        updateComponent(component.id, {
+                          buildContext: event.target.value,
+                        })
+                      }
+                      required
+                    />
                   </label>
                   <label className="full-column">
                     <span>镜像名称</span>
@@ -1565,6 +1730,7 @@ function CiCdSetupFlow({
                       }
                       required
                       value={component.imageRepository}
+                      readOnly={pipelineMode}
                     />
                   </label>
                 </div>
@@ -2500,6 +2666,20 @@ type BuildStatusValue =
   "QUEUED" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELED" | "UNKNOWN";
 
 interface BuildRecord {
+  publicationStatus?: string;
+  stages?: Array<{ code: string; status: string }>;
+  artifactManifestJson?: {
+    reports?: Record<
+      string,
+      { passed: number; failed: number; skipped: number }
+    >;
+    images?: Array<{
+      componentCode: string;
+      repository: string;
+      tag: string;
+      digest?: string;
+    }>;
+  } | null;
   id: string;
   applicationId: string;
   componentId: string | null;
@@ -3646,7 +3826,11 @@ function BuildsPage(): React.ReactElement {
   }
 
   async function triggerBuild(build: BuildRecord): Promise<void> {
-    if (!build.componentId) return;
+    if (
+      !build.componentId &&
+      (!build.publicationStatus || build.publicationStatus === "NOT_APPLICABLE")
+    )
+      return;
     if (
       !window.confirm(
         `确认重新构建 ${build.application.name} / ${build.component?.name ?? "组件"}？`,
@@ -3662,7 +3846,7 @@ function BuildsPage(): React.ReactElement {
         method: "POST",
         body: JSON.stringify({
           applicationId: build.applicationId,
-          componentId: build.componentId,
+          componentId: build.componentId ?? undefined,
         }),
       });
       await queryClient.invalidateQueries({ queryKey: ["builds"] });
@@ -3777,7 +3961,13 @@ function BuildsPage(): React.ReactElement {
                   <strong>
                     {build.application.gitLabProject.pathWithNamespace}
                   </strong>
-                  <span>{build.component?.name ?? "未关联组件"}</span>
+                  <span>
+                    {build.component?.name ??
+                      (build.publicationStatus &&
+                      build.publicationStatus !== "NOT_APPLICABLE"
+                        ? "整套仓库流水线"
+                        : "未关联组件")}
+                  </span>
                 </div>
                 <span className={`status ${buildStatusClass(build.status)}`}>
                   {buildStatusLabels[build.status]}
@@ -3804,6 +3994,44 @@ function BuildsPage(): React.ReactElement {
                   ).toLocaleString("zh-CN")}
                 </span>
               </div>
+              {build.publicationStatus &&
+              build.publicationStatus !== "NOT_APPLICABLE" ? (
+                <details className="omp-alert neutral">
+                  <summary>
+                    制品：
+                    {{
+                      VERIFIED: "整套已校验",
+                      PARTIAL: "部分推送，整套不可用",
+                      PENDING_VERIFY: "已推送，等待校验",
+                      PENDING: "等待结果",
+                      NONE: "尚未推送",
+                    }[build.publicationStatus] ?? build.publicationStatus}{" "}
+                    · {build.images.length} 个已登记镜像
+                  </summary>
+                  <p>
+                    {build.stages
+                      ?.map((stage) => `${stage.code}: ${stage.status}`)
+                      .join(" → ")}
+                  </p>
+                  {Object.entries(
+                    build.artifactManifestJson?.reports ?? {},
+                  ).map(([name, report]) => (
+                    <p key={name}>
+                      {name}：通过 {report.passed}，失败 {report.failed}，跳过{" "}
+                      {report.skipped}
+                    </p>
+                  ))}
+                  {build.artifactManifestJson?.images?.map((image) => (
+                    <p key={image.componentCode}>
+                      <code>
+                        {image.repository}:{image.tag}
+                      </code>
+                      <br />
+                      <small>{image.digest ?? "尚无远端摘要"}</small>
+                    </p>
+                  ))}
+                </details>
+              ) : null}
               <div className="delivery-record-actions">
                 {build.logUrl ? (
                   <a
@@ -3815,7 +4043,9 @@ function BuildsPage(): React.ReactElement {
                     TeamCity 日志 <ExternalLink size={13} />
                   </a>
                 ) : null}
-                {build.componentId ? (
+                {build.componentId ||
+                (build.publicationStatus &&
+                  build.publicationStatus !== "NOT_APPLICABLE") ? (
                   <button
                     className="secondary-button"
                     disabled={triggeringId === build.id}

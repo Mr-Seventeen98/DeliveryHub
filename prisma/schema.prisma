@@ -313,6 +313,12 @@ model Application {
   releaseBranch         String                           @map("release_branch")
   buildMode             BuildMode                        @default(BUILD_ALL) @map("build_mode")
   autoBuildEnabled      Boolean                          @default(true) @map("auto_build_enabled")
+  // 新模式使用一个仓库流水线；旧应用默认继续按组件生成独立任务。
+  ciExecutionMode       String                           @default("COMPONENT_DOCKER") @map("ci_execution_mode")
+  pipelineDefinitionPath String?                         @map("pipeline_definition_path")
+  pipelineDefinitionJson Json?                           @map("pipeline_definition_json")
+  pipelineDefinitionSha256 String?                       @map("pipeline_definition_sha256")
+  pipelineBuildTypeId   String?                          @map("pipeline_build_type_id")
   teamCityConnectionId  String                           @map("teamcity_connection_id") @db.Uuid
   teamCityConnection    TeamCityConnection               @relation(fields: [teamCityConnectionId], references: [id])
   teamCityProjectId     String?                          @map("teamcity_project_id")
@@ -437,6 +443,11 @@ model Build {
   finishedAt          DateTime?      @map("finished_at")
   durationSeconds     Int?           @map("duration_seconds")
   logUrl              String?        @map("log_url")
+  // TeamCity 成功与五镜像可用分别记录；回调中断或部分推送不能冒充整套可用。
+  publicationStatus   String         @default("NOT_APPLICABLE") @map("publication_status")
+  definitionSnapshotJson Json?       @map("definition_snapshot_json")
+  artifactManifestJson Json?         @map("artifact_manifest_json")
+  stages              BuildStage[]
   images              ImageVersion[]
   createdAt           DateTime       @default(now()) @map("created_at")
   updatedAt           DateTime       @updatedAt @map("updated_at")
@@ -444,6 +455,20 @@ model Build {
   @@unique([teamCityBuildId])
   @@index([applicationId, createdAt])
   @@map("builds")
+}
+
+// 阶段只是执行证据；镜像可用性还需整套清单和 TCR 回读校验。
+model BuildStage {
+  id         String    @id @default(uuid()) @db.Uuid
+  buildId    String    @map("build_id") @db.Uuid
+  build      Build     @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  code       String
+  status     String
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+
+  @@unique([buildId, code])
+  @@map("build_stages")
 }
 
 model ImageVersion {

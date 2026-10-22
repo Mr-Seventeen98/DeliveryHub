@@ -201,6 +201,7 @@ export class GitLabClient {
       const response = await this.http.request<string>(
         `${config.apiUrl.replace(/\/$/, "")}/projects/${projectId}/repository/files/${encodedPath}/raw?${query.toString()}`,
         {
+          responseType: "text",
           headers: { "PRIVATE-TOKEN": config.token },
           verifySsl: config.verifySsl,
         },

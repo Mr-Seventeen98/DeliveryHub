@@ -19,13 +19,12 @@ interface RegistryTokenResponse {
   access_token?: string;
 }
 
-
 @Injectable()
 export class RegistryClient {
   constructor(private readonly http: ExternalHttpClient) {}
 
   async testConnection(
-    config: RegistryClientConfig
+    config: RegistryClientConfig,
   ): Promise<{ reachable: true }> {
     try {
       const response = await this.authenticatedGet<unknown>(
@@ -39,7 +38,7 @@ export class RegistryClient {
     } catch (error) {
       if (error instanceof ExternalApiException) throw error;
       throw new ExternalApiException("registry", "Registry connection failed", {
-        reason: error instanceof Error ? error.message : "unknown"
+        reason: error instanceof Error ? error.message : "unknown",
       });
     }
   }
@@ -74,24 +73,60 @@ export class RegistryClient {
       };
     } catch (error) {
       if (error instanceof ExternalApiException) throw error;
-      throw new ExternalApiException("registry", "Registry tag listing failed", {
-        reason: error instanceof Error ? error.message : "unknown",
-      });
+      throw new ExternalApiException(
+        "registry",
+        "Registry tag listing failed",
+        {
+          reason: error instanceof Error ? error.message : "unknown",
+        },
+      );
     }
+  }
+
+  /** 从目标仓库回读 manifest 摘要；没有合法远端摘要时不把本地推送声明当验证成功。 */
+  async getManifestDigest(
+    config: RegistryClientConfig,
+    namespace: string,
+    repository: string,
+    tag: string,
+  ): Promise<string> {
+    const path = [namespace, repository].map(encodeURIComponent).join("/");
+    const response = await this.authenticatedGet<unknown>(
+      config,
+      `${config.registryUrl.replace(/\/$/, "")}/v2/${path}/manifests/${encodeURIComponent(tag)}`,
+      `repository:${namespace}/${repository}:pull`,
+      {
+        Accept:
+          "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json",
+      },
+    );
+    const digest = response.headers["docker-content-digest"];
+    if (
+      response.statusCode !== 200 ||
+      !/^sha256:[a-f0-9]{64}$/.test(digest ?? "")
+    )
+      throw new ExternalApiException(
+        "registry",
+        "Registry manifest verification failed",
+        { statusCode: response.statusCode },
+      );
+    return digest!;
   }
 
   private async authenticatedGet<T>(
     config: RegistryClientConfig,
     url: string,
     requestedScope?: string,
+    extraHeaders: Record<string, string> = {},
   ) {
-    const basic = Buffer.from(
-      `${config.username}:${config.password}`,
-    ).toString("base64");
+    const basic = Buffer.from(`${config.username}:${config.password}`).toString(
+      "base64",
+    );
     const first = await this.http.request<T>(url, {
       headers: {
         Authorization: `Basic ${basic}`,
         Accept: "application/json",
+        ...extraHeaders,
       },
       verifySsl: config.verifySsl,
     });
@@ -131,6 +166,7 @@ export class RegistryClient {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
+        ...extraHeaders,
       },
       verifySsl: config.verifySsl,
     });

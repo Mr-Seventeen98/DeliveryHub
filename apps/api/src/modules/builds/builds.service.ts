@@ -32,6 +32,7 @@ import type { ImageQueryDto } from "./dto/image-query.dto";
 import type { RegistryCatalogQueryDto } from "./dto/registry-catalog-query.dto";
 import type { TeamCityBuildCallbackDto } from "./dto/teamcity-build-callback.dto";
 import type { TriggerBuildDto } from "./dto/trigger-build.dto";
+import { RepositoryBuildsService } from "./repository-builds.service";
 
 @Injectable()
 export class BuildsService implements OnModuleInit, OnModuleDestroy {
@@ -47,6 +48,7 @@ export class BuildsService implements OnModuleInit, OnModuleDestroy {
     private readonly registry: RegistryClient,
     private readonly tencentTcr: TencentTcrClient,
     private readonly config: ConfigService,
+    private readonly repositoryBuilds: RepositoryBuildsService,
   ) {
     this.pollIntervalMs =
       Number(config.get("DEFAULT_BUILD_STATUS_POLL_INTERVAL_SECONDS") ?? 15) *
@@ -130,6 +132,7 @@ export class BuildsService implements OnModuleInit, OnModuleDestroy {
           },
           component: { select: { id: true, name: true, code: true } },
           images: true,
+          stages: true,
         },
         orderBy: { createdAt: "desc" },
         skip: (query.page - 1) * query.pageSize,
@@ -419,7 +422,10 @@ export class BuildsService implements OnModuleInit, OnModuleDestroy {
     });
     if (!application || application.status !== ApplicationStatus.ACTIVE)
       throw new NotFoundException("Application not found or not active");
-    if (application.components.length === 0)
+    if (
+      application.components.length === 0 &&
+      application.ciExecutionMode !== "REPOSITORY_PIPELINE"
+    )
       throw new NotFoundException("No buildable component found");
 
     const token = await this.credentials.resolve(
@@ -431,6 +437,11 @@ export class BuildsService implements OnModuleInit, OnModuleDestroy {
       token,
       verifySsl: application.teamCityConnection.verifySsl,
     };
+    if (application.ciExecutionMode === "REPOSITORY_PIPELINE") {
+      if (dto.componentId)
+        throw new BadRequestException("仓库流水线必须整套构建");
+      return this.repositoryBuilds.trigger(application, clientConfig, userId);
+    }
     const builds = [];
     for (const component of application.components) {
       const queued = await this.teamCity.queueBuild(
@@ -570,6 +581,24 @@ export class BuildsService implements OnModuleInit, OnModuleDestroy {
       include: { components: true, teamCityConnection: true },
     });
     if (!application) throw new NotFoundException("Application not found");
+    if (application.ciExecutionMode === "REPOSITORY_PIPELINE") {
+      if (!dto.pipeline_result)
+        throw new BadRequestException("仓库流水线回调缺少制品清单");
+      const token = await this.credentials.resolve(
+        application.teamCityConnection.tokenCredentialId,
+        [CredentialType.TEAMCITY_TOKEN],
+      );
+      return this.repositoryBuilds.ingest(
+        application.id,
+        dto.teamcity_build_id,
+        dto.pipeline_result,
+        {
+          baseUrl: application.teamCityConnection.baseUrl,
+          token,
+          verifySsl: application.teamCityConnection.verifySsl,
+        },
+      );
+    }
     const componentByCode = new Map(
       application.components.map((component) => [component.code, component]),
     );
@@ -674,6 +703,10 @@ export class BuildsService implements OnModuleInit, OnModuleDestroy {
             token,
             verifySsl: application.teamCityConnection.verifySsl,
           };
+          if (application.ciExecutionMode === "REPOSITORY_PIPELINE") {
+            await this.repositoryBuilds.sync(application, clientConfig);
+            continue;
+          }
           for (const component of application.components) {
             const remoteBuilds = await this.teamCity.listBuildsByBuildType(
               clientConfig,

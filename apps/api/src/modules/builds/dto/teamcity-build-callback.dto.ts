@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  IsObject,
   MinLength,
   ValidateNested,
 } from "class-validator";
@@ -33,6 +34,10 @@ class TeamCityImageCallbackDto {
 }
 
 export class TeamCityBuildCallbackDto {
+  /** 仓库模式的版本化执行清单；服务层按配置快照校验，不能仅凭 SUCCESS 登记镜像。 */
+  @IsOptional()
+  @IsObject()
+  pipeline_result?: Record<string, unknown>;
   @IsUUID()
   teamcity_connection_id!: string;
 

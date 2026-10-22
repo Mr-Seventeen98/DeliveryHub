@@ -19,7 +19,7 @@ import {
   RegistryType,
   TeamCityResourceType,
   type Component,
-  type Prisma,
+  Prisma,
 } from "@prisma/client";
 import { GitLabClient } from "../../adapters/gitlab/gitlab.client";
 import { ExternalApiException } from "../../adapters/external-api.exception";
@@ -33,6 +33,11 @@ import { CredentialsService } from "../credentials/credentials.service";
 import { normalizeRepositoryUrl } from "../teamcity/teamcity-repository";
 import { deriveTeamCityCallbackToken } from "../builds/build-callback-token";
 import type { CreateCiConfigurationDto } from "./dto/create-ci-configuration.dto";
+import {
+  parsePipelineDefinition,
+  repositoryPath,
+  repositoryPipelineSteps,
+} from "./repository-pipeline";
 
 const IMAGE_REGISTRY = "ccr.ccs.tencentyun.com";
 const IMAGE_NAMESPACE = "fc17_dev";
@@ -62,6 +67,9 @@ export interface ExistingCiConfigurationResult {
     teamCityGroupId: string;
     teamCityGroupName: string;
     autoBuildEnabled: boolean;
+    ciExecutionMode: string;
+    pipelineDefinitionPath: string | null;
+    registryConnectionId: string | null;
     components: Array<{
       id: string;
       name: string;
@@ -112,8 +120,7 @@ export class ProvisioningService {
     const group = application.teamCityResources[0];
     const teamCityGroupId =
       application.teamCityProjectId ?? group?.resourceExternalId;
-    if (!teamCityGroupId)
-      return { configured: false, configuration: null };
+    if (!teamCityGroupId) return { configured: false, configuration: null };
 
     return {
       configured: true,
@@ -124,6 +131,9 @@ export class ProvisioningService {
         teamCityGroupId,
         teamCityGroupName: group?.resourceName ?? application.name,
         autoBuildEnabled: application.autoBuildEnabled,
+        ciExecutionMode: application.ciExecutionMode,
+        pipelineDefinitionPath: application.pipelineDefinitionPath,
+        registryConnectionId: application.registryConnectionId,
         components: application.components.map((component) => ({
           id: component.id,
           name: component.name,
@@ -142,7 +152,6 @@ export class ProvisioningService {
     requestId: string,
     queueJobId?: string,
   ): Promise<ProvisioningResult> {
-    this.validateRequest(dto);
     const [project, connection] = await Promise.all([
       this.prisma.gitLabProject.findUnique({
         where: { id: dto.gitLabProjectId },
@@ -164,13 +173,61 @@ export class ProvisioningService {
         CredentialType.TEAMCITY_TOKEN,
       ]),
     ]);
+    // 仓库配置为组件清单的权威来源，不能接受浏览器删掉某个组件后仍声称整套构建。
+    let pipeline: ReturnType<typeof parsePipelineDefinition> | undefined;
+    if (dto.ciExecutionMode === "REPOSITORY_PIPELINE") {
+      const path = repositoryPath.parse(
+        dto.pipelineDefinitionPath ?? "delivery.yaml",
+      );
+      const content = await this.gitLab.getRepositoryFileRaw(
+        {
+          apiUrl: project.gitLabInstance.apiUrl,
+          token: gitLabToken,
+          verifySsl: project.gitLabInstance.verifySsl,
+        },
+        project.gitLabProjectId,
+        dto.releaseBranch,
+        path,
+      );
+      try {
+        pipeline = parsePipelineDefinition(content);
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error ? error.message : "流水线配置无效",
+        );
+      }
+      dto = {
+        ...dto,
+        pipelineDefinitionPath: path,
+        components: pipeline.definition.components.map((item) => ({
+          name: item.name,
+          code: item.code,
+          dockerfilePath: item.dockerfile,
+          buildContext: item.context,
+          imageRepository: item.imageRepository,
+        })),
+      };
+    }
+    this.validateRequest(dto);
     await this.validateDockerfiles(
       project.gitLabInstance.apiUrl,
       project.gitLabInstance.verifySsl,
       gitLabToken,
       project.gitLabProjectId,
       dto.releaseBranch,
-      dto.components.map((component) => component.dockerfilePath),
+      [
+        ...new Set([
+          ...dto.components.map((component) => component.dockerfilePath),
+          ...(pipeline
+            ? [
+                dto.pipelineDefinitionPath!,
+                pipeline.definition.entrypoint,
+                pipeline.definition.assetsLock,
+                pipeline.definition.buildEnv,
+              ]
+            : []),
+        ]),
+      ],
     );
 
     const applicationCode = `app-${stableToken(project.pathWithNamespace)}`;
@@ -180,30 +237,73 @@ export class ProvisioningService {
         teamCityConnectionId: connection.id,
       },
     });
+    // 模式切换会改变回调契约；已有排队/运行批次必须先结束，避免旧批次被新模式误判。
+    if (
+      existingApplication &&
+      existingApplication.ciExecutionMode !==
+        (dto.ciExecutionMode ?? "COMPONENT_DOCKER")
+    ) {
+      const active = await this.prisma.build.count({
+        where: {
+          applicationId: existingApplication.id,
+          status: { in: ["QUEUED", "RUNNING"] },
+        },
+      });
+      if (active)
+        throw new BadRequestException(
+          "存在排队或运行中的构建，请结束后再切换 CI 模式",
+        );
+    }
     const registryConnection = await this.prisma.registryConnection.findFirst({
       where: {
         registryType: RegistryType.TENCENT_TCR,
-        registryUrl: `https://${IMAGE_REGISTRY}`,
-        namespace: IMAGE_NAMESPACE,
+        ...(dto.registryConnectionId
+          ? { id: dto.registryConnectionId }
+          : {
+              registryUrl: `https://${IMAGE_REGISTRY}`,
+              namespace: IMAGE_NAMESPACE,
+            }),
         enabled: true,
       },
-      select: { id: true },
+      select: {
+        id: true,
+        registryUrl: true,
+        namespace: true,
+        usernameCredentialId: true,
+        passwordCredentialId: true,
+      },
     });
+    if (pipeline && !registryConnection)
+      throw new BadRequestException("仓库流水线必须选择已启用的 TCR 连接");
+    const pipelineData = {
+      ciExecutionMode: dto.ciExecutionMode ?? "COMPONENT_DOCKER",
+      pipelineDefinitionPath: pipeline ? dto.pipelineDefinitionPath : null,
+      pipelineDefinitionJson: pipeline
+        ? (pipeline.definition as unknown as Prisma.InputJsonValue)
+        : Prisma.DbNull,
+      pipelineDefinitionSha256: pipeline?.sha256 ?? null,
+      ...(!pipeline ? { pipelineBuildTypeId: null } : {}),
+    };
     const application = existingApplication
       ? await this.prisma.application.update({
           where: { id: existingApplication.id },
           data: {
             name: project.name,
+            ...pipelineData,
             releaseBranch: dto.releaseBranch,
             autoBuildEnabled: dto.autoBuildEnabled,
-            registryConnectionId:
-              existingApplication.registryConnectionId ?? registryConnection?.id,
+            registryConnectionId: pipeline
+              ? registryConnection!.id
+              : (dto.registryConnectionId ??
+                existingApplication.registryConnectionId ??
+                registryConnection?.id),
             status: ApplicationStatus.CONFIGURING,
           },
         })
       : await this.prisma.application.create({
           data: {
             gitLabProjectId: project.id,
+            ...pipelineData,
             name: project.name,
             code: applicationCode,
             releaseBranch: dto.releaseBranch,
@@ -215,6 +315,12 @@ export class ProvisioningService {
           },
         });
 
+    const previousComponents = await this.prisma.component.findMany({
+      where: {
+        applicationId: application.id,
+        teamCityBuildTypeId: { not: null },
+      },
+    });
     const components = await this.saveComponents(application.id, dto);
     const taskData = {
       applicationId: application.id,
@@ -266,7 +372,9 @@ export class ProvisioningService {
             return existing;
           }
           if (dto.teamCityGroupMode === "existing") {
-            throw new BadRequestException("所选 TeamCity 组已不存在，请刷新后重选");
+            throw new BadRequestException(
+              "所选 TeamCity 组已不存在，请刷新后重选",
+            );
           }
           createdResources += 1;
           return this.teamCity.createProject(config, {
@@ -286,7 +394,172 @@ export class ProvisioningService {
       );
 
       const results: ProvisioningResult["components"] = [];
-      for (const [index, component] of components.entries()) {
+      if (pipeline && registryConnection) {
+        activeStepCode = "repository_pipeline";
+        await this.prisma.ciProvisionTask.update({
+          where: { id: task.id },
+          data: { currentStep: activeStepCode, progressPercent: 15 },
+        });
+        const [registryUsername, registryPassword] = await Promise.all([
+          this.credentials.resolve(registryConnection.usernameCredentialId, [
+            CredentialType.REGISTRY_USERNAME,
+          ]),
+          this.credentials.resolve(registryConnection.passwordCredentialId, [
+            CredentialType.REGISTRY_PASSWORD,
+          ]),
+        ]);
+        // 单个 VCS Root/Build Type 对应整个仓库；五组件共用 checkout，不再独立入队。
+        const buildTypeId = `${group.id}_${stableToken(project.pathWithNamespace)}_RepositoryCI`;
+        const vcsRootId = `${buildTypeId}_GitLab`;
+        const vcs = {
+          id: vcsRootId,
+          name: `${project.pathWithNamespace} (${dto.releaseBranch})`,
+          projectId: group.id,
+          repositoryUrl: project.sshCloneUrl,
+          branch: dto.releaseBranch,
+          authMode: "TEAMCITY_SSH_KEY" as const,
+          sshKeyName: TEAMCITY_GITLAB_SSH_KEY,
+        };
+        if (await this.teamCity.getVcsRootById(config, vcsRootId))
+          await this.teamCity.updateVcsRoot(config, vcs);
+        else {
+          await this.teamCity.createVcsRoot(config, vcs);
+          createdResources += 1;
+        }
+        const input = {
+          id: buildTypeId,
+          name: "Repository CI: Test, Build and Push",
+          projectId: group.id,
+          parameters: [
+            { name: "env.CI", value: "true" },
+            { name: "env.CI_TCR_PUSH", value: "1" },
+            { name: "env.DELIVERY_HUB_BUILD_ID", value: "%teamcity.build.id%" },
+            { name: "env.DELIVERY_HUB_BUILD_NUMBER", value: "%build.number%" },
+            {
+              name: "env.DELIVERY_HUB_COMMIT_SHA",
+              value: "%build.vcs.number%",
+            },
+            {
+              name: "env.DELIVERY_HUB_BRANCH",
+              value: "%teamcity.build.branch%",
+            },
+            { name: "env.DELIVERY_HUB_PROJECT_ID", value: application.id },
+            { name: "env.TEAMCITY_CONNECTION_ID", value: connection.id },
+            {
+              name: "env.DELIVERY_HUB_DEFINITION_SHA256",
+              value: pipeline.sha256,
+            },
+            {
+              name: "env.DELIVERY_HUB_DEFINITION_JSON",
+              value: JSON.stringify(pipeline.definition),
+            },
+            {
+              name: "env.IMAGE_REGISTRY",
+              value: new URL(registryConnection.registryUrl).host,
+            },
+            {
+              name: "env.IMAGE_NAMESPACE",
+              value: registryConnection.namespace,
+            },
+            {
+              name: "env.TCR_USERNAME",
+              value: registryUsername,
+              type: { rawValue: "password display='normal'" },
+            },
+            {
+              name: "env.TCR_PASSWORD",
+              value: registryPassword,
+              type: { rawValue: "password display='normal'" },
+            },
+            { name: "env.DELIVERY_HUB_CALLBACK_URL", value: callbackUrl },
+            {
+              name: "env.DELIVERY_HUB_CALLBACK_TOKEN",
+              value: callbackToken,
+              type: { rawValue: "password display='normal'" },
+            },
+          ],
+          steps: repositoryPipelineSteps(
+            pipeline.definition,
+            dto.pipelineDefinitionPath!,
+          ),
+          autoBuildEnabled: dto.autoBuildEnabled,
+          releaseBranch: dto.releaseBranch,
+        };
+        if (await this.teamCity.getBuildTypeById(config, buildTypeId)) {
+          await this.teamCity.updateBuildParameters(
+            config,
+            buildTypeId,
+            input.parameters,
+          );
+          await this.teamCity.updateBuildSteps(
+            config,
+            buildTypeId,
+            input.steps,
+          );
+          await this.teamCity.updateBuildTriggers(
+            config,
+            buildTypeId,
+            dto.autoBuildEnabled,
+            dto.releaseBranch,
+          );
+          reusedResources += 1;
+        } else {
+          await this.teamCity.createBuildType(config, input);
+          createdResources += 1;
+        }
+        await this.teamCity.configureRepositoryPipeline(config, buildTypeId);
+        if (
+          !(await this.teamCity.hasVcsRootEntry(config, buildTypeId, vcsRootId))
+        )
+          await this.teamCity.attachVcsRoot(config, buildTypeId, vcsRootId);
+        await this.saveResource(
+          application.id,
+          null,
+          TeamCityResourceType.BUILD_TYPE,
+          buildTypeId,
+          input.name,
+          { role: "repository-pipeline", definitionSha256: pipeline.sha256 },
+        );
+        await this.prisma.application.update({
+          where: { id: application.id },
+          data: { pipelineBuildTypeId: buildTypeId },
+        });
+        // 切换模式只停用本应用受管的旧触发器，保留旧任务和构建历史供人工回看。
+        for (const component of previousComponents)
+          if (component.teamCityBuildTypeId)
+            await this.teamCity.updateBuildTriggers(
+              config,
+              component.teamCityBuildTypeId,
+              false,
+              dto.releaseBranch,
+            );
+        await this.prisma.component.updateMany({
+          where: { applicationId: application.id },
+          data: { teamCityBuildTypeId: null },
+        });
+        const queued = dto.runFirstBuild
+          ? await this.teamCity.queueBuild(
+              config,
+              buildTypeId,
+              dto.releaseBranch,
+            )
+          : undefined;
+        results.push({
+          name: "整套仓库流水线",
+          projectId: group.id,
+          buildTypeId,
+          url: `${connection.baseUrl}/buildConfiguration/${encodeURIComponent(buildTypeId)}`,
+          ...(queued?.id ? { queuedBuildId: queued.id } : {}),
+        });
+      }
+      if (!pipeline && existingApplication?.pipelineBuildTypeId)
+        await this.teamCity.updateBuildTriggers(
+          config,
+          existingApplication.pipelineBuildTypeId,
+          false,
+          dto.releaseBranch,
+        );
+      for (const [index, component] of (pipeline ? [] : components).entries()) {
         activeStepCode = `component_${index + 1}`;
         await this.prisma.ciProvisionTask.update({
           where: { id: task.id },
@@ -317,8 +590,7 @@ export class ProvisioningService {
                   projectId,
                   component.name,
                 );
-            }
-            else {
+            } else {
               createdResources += 1;
               await this.teamCity.createProject(config, {
                 id: projectId,
@@ -344,7 +616,10 @@ export class ProvisioningService {
               authMode: "TEAMCITY_SSH_KEY" as const,
               sshKeyName: TEAMCITY_GITLAB_SSH_KEY,
             };
-            const vcsRoot = await this.teamCity.getVcsRootById(config, vcsRootId);
+            const vcsRoot = await this.teamCity.getVcsRootById(
+              config,
+              vcsRootId,
+            );
             if (vcsRoot) reusedResources += 1;
             else {
               createdResources += 1;
@@ -413,7 +688,7 @@ export class ProvisioningService {
                   callbackUrl,
                   callbackToken,
                 ),
-                steps: buildSteps(),
+                steps: buildSteps(component),
                 autoBuildEnabled: dto.autoBuildEnabled,
                 releaseBranch: dto.releaseBranch,
               });
@@ -433,7 +708,7 @@ export class ProvisioningService {
               await this.teamCity.updateBuildSteps(
                 config,
                 buildTypeId,
-                buildSteps(),
+                buildSteps(component),
               );
               await this.teamCity.updateBuildTriggers(
                 config,
@@ -563,11 +838,21 @@ export class ProvisioningService {
   }
 
   private validateRequest(dto: CreateCiConfigurationDto): void {
+    // build args 是公开构建参数；校验名称和值，后续使用 shell 单引号编码，不能拼接命令。
+    for (const component of dto.components)
+      for (const [key, value] of Object.entries(component.buildArgs ?? {})) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string")
+          throw new BadRequestException(
+            "Docker Build Args 必须为合法名称和字符串值",
+          );
+      }
     if (dto.teamCityGroupMode === "existing" && !dto.teamCityGroupId?.trim())
       throw new BadRequestException("请选择 TeamCity 组");
     if (dto.teamCityGroupMode === "new" && !dto.teamCityGroupName?.trim())
       throw new BadRequestException("请输入新组名称");
-    const dockerfiles = new Set(dto.components.map((item) => item.dockerfilePath));
+    const dockerfiles = new Set(
+      dto.components.map((item) => item.dockerfilePath),
+    );
     const names = new Set(dto.components.map((item) => item.name.trim()));
     const images = new Set(dto.components.map((item) => item.imageRepository));
     if (dockerfiles.size !== dto.components.length)
@@ -603,7 +888,7 @@ export class ProvisioningService {
     const missing = paths.filter((path) => !found.has(path));
     if (missing.length)
       throw new BadRequestException(
-        `所选分支中找不到 Dockerfile：${missing.join("、")}`,
+        `所选分支中找不到构建文件：${missing.join("、")}`,
       );
   }
 
@@ -611,16 +896,27 @@ export class ProvisioningService {
     applicationId: string,
     dto: CreateCiConfigurationDto,
   ): Promise<Component[]> {
-    const codes = dto.components.map((item) => stableToken(item.dockerfilePath));
+    const codes = dto.components.map(
+      (item) => item.code ?? stableToken(item.dockerfilePath),
+    );
     await this.prisma.component.updateMany({
       where: { applicationId, code: { notIn: codes } },
       data: { enabled: false },
     });
     const result: Component[] = [];
     for (const item of dto.components) {
-      const code = stableToken(item.dockerfilePath);
+      const code = item.code ?? stableToken(item.dockerfilePath);
       const directory = posix.dirname(item.dockerfilePath);
-      const buildContext = directory === "." ? "." : directory;
+      const buildContext =
+        item.buildContext ?? (directory === "." ? "." : directory);
+      // 旧仓库可能使用中文或空格目录；保留此兼容性，但拒绝绝对路径、越界与 shell 展开字符。
+      if (
+        !buildContext ||
+        buildContext.startsWith("/") ||
+        buildContext.split("/").includes("..") ||
+        /[\\\x00-\x1f"`$]/.test(buildContext)
+      )
+        throw new BadRequestException("构建上下文必须是安全的仓库相对路径");
       result.push(
         await this.prisma.component.upsert({
           where: { applicationId_code: { applicationId, code } },
@@ -631,6 +927,7 @@ export class ProvisioningService {
             sourceDirectory: buildContext,
             dockerfilePath: item.dockerfilePath,
             buildContext,
+            buildArgsJson: item.buildArgs ?? {},
             imageRepository: item.imageRepository,
             enabled: true,
           },
@@ -639,6 +936,7 @@ export class ProvisioningService {
             sourceDirectory: buildContext,
             dockerfilePath: item.dockerfilePath,
             buildContext,
+            buildArgsJson: item.buildArgs ?? {},
             imageRepository: item.imageRepository,
             enabled: true,
           },
@@ -774,7 +1072,18 @@ function buildParameters(
   ];
 }
 
-function buildSteps(): Array<{ id: string; name: string; script: string }> {
+export function buildSteps(
+  component?: Pick<Component, "buildArgsJson">,
+): Array<{ id: string; name: string; script: string }> {
+  // 旧组件没有新增参数时命令保持原样；参数值按 shell 字面量传递，避免空格/引号改变命令结构。
+  const args = Object.entries(
+    (component?.buildArgsJson ?? {}) as Record<string, string>,
+  )
+    .map(
+      ([key, value]) =>
+        ` --build-arg '${`${key}=${value}`.replace(/'/g, `'"'"'`)}'`,
+    )
+    .join("");
   const imageVariables = [
     'IMAGE_TAG="%build.vcs.number%"',
     'IMAGE_BASE="%env.IMAGE_REGISTRY%/%env.IMAGE_NAMESPACE%/%env.IMAGE_REPOSITORY%"',
@@ -784,7 +1093,7 @@ function buildSteps(): Array<{ id: string; name: string; script: string }> {
     {
       id: "build_image",
       name: "Build image",
-      script: `set -eu\n${imageVariables}\ndocker build --pull --rm -f "%env.DOCKERFILE_PATH%" -t "${"${IMAGE}"}" "%env.BUILD_CONTEXT%"`,
+      script: `set -eu\n${imageVariables}\ndocker build --pull --rm${args} -f "%env.DOCKERFILE_PATH%" -t "${"${IMAGE}"}" "%env.BUILD_CONTEXT%"`,
     },
     {
       id: "push_image",

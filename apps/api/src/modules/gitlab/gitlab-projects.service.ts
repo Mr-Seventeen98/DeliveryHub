@@ -8,6 +8,7 @@ import { GitLabClient } from "../../adapters/gitlab/gitlab.client";
 import { PrismaService } from "../../database/prisma.service";
 import { CredentialsService } from "../credentials/credentials.service";
 import type { GitLabProjectQueryDto } from "./dto/gitlab-project-query.dto";
+import { parsePipelineDefinition } from "../provisioning/repository-pipeline";
 
 @Injectable()
 export class GitLabProjectsService {
@@ -231,6 +232,8 @@ export class GitLabProjectsService {
       type: string;
       evidence: string[];
     }>;
+    pipeline?: ReturnType<typeof parsePipelineDefinition>;
+    pipelineError?: string;
   }> {
     const { project, config } = await this.getRepositoryAccess(id);
     const ref = requestedRef?.trim() || project.defaultBranch;
@@ -289,7 +292,31 @@ export class GitLabProjectsService {
         evidence: localFeatures.map((feature) => feature.path),
       };
     });
-    return { ref, featureFiles, componentSuggestions };
+    // 配置无效仍返回 Docker 扫描结果，让旧方式可继续使用，但不能静默降级仓库流水线。
+    let pipeline: ReturnType<typeof parsePipelineDefinition> | undefined;
+    let pipelineError: string | undefined;
+    if (blobs.some((item) => item.path === "delivery.yaml")) {
+      try {
+        pipeline = parsePipelineDefinition(
+          await this.client.getRepositoryFileRaw(
+            config,
+            project.gitLabProjectId,
+            ref,
+            "delivery.yaml",
+          ),
+        );
+      } catch (error) {
+        pipelineError =
+          error instanceof Error ? error.message : "流水线配置读取失败";
+      }
+    }
+    return {
+      ref,
+      featureFiles,
+      componentSuggestions,
+      ...(pipeline ? { pipeline } : {}),
+      ...(pipelineError ? { pipelineError } : {}),
+    };
   }
 
   private async getRepositoryAccess(id: string): Promise<{

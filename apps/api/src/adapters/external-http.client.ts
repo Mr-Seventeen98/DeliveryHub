@@ -7,6 +7,8 @@ export interface ExternalRequestOptions {
   headers?: Record<string, string>;
   body?: string;
   verifySsl?: boolean;
+  /** GitLab raw 文件可能恰好是 JSON；此时必须保留原字节文本供摘要和配置解析使用。 */
+  responseType?: "text";
 }
 
 export interface ExternalResponse<T> {
@@ -29,26 +31,26 @@ export class ExternalHttpClient {
 
   async request<T>(
     url: string,
-    options: ExternalRequestOptions = {}
+    options: ExternalRequestOptions = {},
   ): Promise<ExternalResponse<T>> {
     const dispatcher = new Agent({
       connect: {
         timeout: this.connectTimeout,
-        rejectUnauthorized: options.verifySsl ?? true
+        rejectUnauthorized: options.verifySsl ?? true,
       },
       headersTimeout: this.readTimeout,
-      bodyTimeout: this.readTimeout
+      bodyTimeout: this.readTimeout,
     });
     try {
       const response = await request(url, {
         method: options.method ?? "GET",
         headers: options.headers,
         body: options.body,
-        dispatcher
+        dispatcher,
       });
       const text = await response.body.text();
       let body: unknown = text;
-      if (text) {
+      if (text && options.responseType !== "text") {
         try {
           body = JSON.parse(text);
         } catch {
@@ -60,8 +62,9 @@ export class ExternalHttpClient {
         body: body as T,
         headers: Object.fromEntries(
           Object.entries(response.headers)
-            .filter((entry): entry is [string, string | string[]] =>
-              entry[1] !== undefined,
+            .filter(
+              (entry): entry is [string, string | string[]] =>
+                entry[1] !== undefined,
             )
             .map(([name, value]) => [
               name.toLowerCase(),

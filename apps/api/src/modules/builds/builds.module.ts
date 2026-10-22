@@ -7,6 +7,7 @@ import {
   TeamCityBuildCallbackController,
 } from "./builds.controller";
 import { BuildsService } from "./builds.service";
+import { RepositoryBuildsService } from "./repository-builds.service";
 
 @Module({
   imports: [AdaptersModule, CredentialsModule],
@@ -15,7 +16,7 @@ import { BuildsService } from "./builds.service";
     ImagesController,
     TeamCityBuildCallbackController,
   ],
-  providers: [BuildsService],
+  providers: [BuildsService, RepositoryBuildsService],
   exports: [BuildsService],
 })
 export class BuildsModule {}
