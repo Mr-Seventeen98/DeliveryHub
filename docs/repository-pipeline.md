@@ -29,3 +29,5 @@ TeamCity 凭据使用 password 类型的环境参数。推送使用任务专属 
 本地执行 `pnpm db:generate`、`pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm build`。边界测试覆盖路径注入、缺失/重复组件、必跑跳过、TC 失败、第五镜像摘要失败及并发迟到回调。真实 GitLab/TC/TCR 联调和本地替身测试分别报告。
 
 本功能不调用 Deployment 模块，不连接业务目标服务器，不执行现网 SQL。
+
+融合平台五组件的真实远程构建与本地补同步验收，见 [2026-10-23 最终验收记录](integrated-platform-ci-acceptance-20261023.md)。
