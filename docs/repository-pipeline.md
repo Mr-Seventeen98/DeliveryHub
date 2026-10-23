@@ -31,3 +31,5 @@ TeamCity 凭据使用 password 类型的环境参数。推送使用任务专属 
 本功能不调用 Deployment 模块，不连接业务目标服务器，不执行现网 SQL。
 
 融合平台五组件的真实远程构建与本地补同步验收，见 [2026-10-23 最终验收记录](integrated-platform-ci-acceptance-20261023.md)。
+
+改造合并到 `main`、切换提交触发及新构建 3807 的独立验收，见 [main 主线验收记录](integrated-platform-main-ci-acceptance-20261023.md)。
