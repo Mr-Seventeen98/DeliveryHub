@@ -7,3 +7,7 @@
 5. 访问 `http://localhost:8080`，OpenAPI 位于 `http://localhost:8080/api/docs`。
 
 生产环境必须更换 PostgreSQL 密码、限制数据库和 Redis 网络访问，并通过反向代理启用 HTTPS。
+
+## macOS 常驻部署
+
+Mac 主机可使用独立数据目录及 system launchd，在用户登录前启动管理服务。配置生成、迁移顺序和验收要求见 [macOS 部署说明](deployment-macos.md)。
