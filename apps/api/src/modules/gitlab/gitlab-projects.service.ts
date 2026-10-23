@@ -219,6 +219,30 @@ export class GitLabProjectsService {
     return { ref, path, content };
   }
 
+  /** 发布执行器从该次构建的完整提交读取，不随 main 后续变动漂移，也不获取仓库其他文件。 */
+  async getDeploymentRunner(
+    id: string,
+    commitSha: string,
+    path: string,
+  ): Promise<string> {
+    if (
+      !/^[0-9a-f]{40}$/.test(commitSha) ||
+      !/^scripts\/[a-zA-Z0-9_/-]+\.py$/.test(path) ||
+      path.split("/").includes("..")
+    )
+      throw new BadRequestException("Invalid deployment runner revision/path");
+    const { project, config } = await this.getRepositoryAccess(id);
+    const content = await this.client.getRepositoryFileRaw(
+      config,
+      project.gitLabProjectId,
+      commitSha,
+      path,
+    );
+    if (Buffer.byteLength(content) > 256 * 1024 || content.includes("\0"))
+      throw new BadRequestException("Invalid deployment runner content");
+    return content;
+  }
+
   async scanRepository(
     id: string,
     requestedRef?: string,

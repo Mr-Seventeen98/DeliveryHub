@@ -5304,6 +5304,49 @@ function deploymentStatusClass(status: DeploymentStatusValue): string {
 }
 
 function DeploymentsPage(): React.ReactElement {
+  // 整套发布有独立的幂等收据和回退点；与原单镜像部署同时展示，避免把五个镜像当五次独立发布。
+  const policies = useQuery({
+    queryKey: ["automatic-deployment-policies"],
+    queryFn: () =>
+      apiRequest<
+        Array<{
+          id: string;
+          path: string;
+          autoDeployEnabled: boolean;
+          autoDeployBranch: string;
+          autoDeployRunnerPath: string;
+          application: { name: string };
+          server: { name: string; sshAlias: string } | null;
+        }>
+      >("/deployments/automatic-policies"),
+    refetchInterval: 15_000,
+  });
+  const releases = useQuery({
+    queryKey: ["repository-releases"],
+    queryFn: () =>
+      apiRequest<
+        Array<{
+          id: string;
+          status: DeploymentStatusValue;
+          output: string | null;
+          errorMessage: string | null;
+          createdAt: string;
+          build: {
+            teamCityBuildId: string;
+            teamCityBuildNumber: string;
+            commitSha: string;
+            branch: string;
+            application: { name: string };
+          };
+          deploymentDirectory: {
+            path: string;
+            environment: string;
+            server: { name: string; sshAlias: string } | null;
+          };
+        }>
+      >("/deployments/repository-releases"),
+    refetchInterval: 10_000,
+  });
   const deployments = useQuery({
     queryKey: ["deployments"],
     queryFn: () => apiRequest<DeploymentRecord[]>("/deployments"),
@@ -5318,6 +5361,72 @@ function DeploymentsPage(): React.ReactElement {
   return (
     <section className="page-stack">
       <PageHeader eyebrow="部署运维 · Docker Compose" title="部署记录" />
+      <section className="panel">
+        <div className="panel-title-row">
+          <h2>整套自动发布</h2>
+          <span>完整构建成功、五镜像摘要校验通过后发布</span>
+        </div>
+        {policies.data?.map((policy) => (
+          <p key={policy.id}>
+            <strong>{policy.application.name}</strong> ·{" "}
+            {policy.autoDeployBranch} · {policy.server?.sshAlias} ·{" "}
+            <code>{policy.path}</code> ·{" "}
+            <span
+              className={`status ${policy.autoDeployEnabled ? "success" : "draft"}`}
+            >
+              {policy.autoDeployEnabled ? "自动发布已启用" : "自动发布已暂停"}
+            </span>
+          </p>
+        ))}
+        {policies.isError ? (
+          <p className="error-message">{policies.error.message}</p>
+        ) : null}
+        {releases.isError ? (
+          <p className="error-message">{releases.error.message}</p>
+        ) : null}
+        {!releases.isPending && !releases.data?.length ? (
+          <p>尚无整套发布记录。启用策略不会追溯发布历史构建。</p>
+        ) : null}
+        <div className="deployment-list">
+          {releases.data?.map((release) => (
+            <article className="deployment-record" key={release.id}>
+              <div className="deployment-record-head">
+                <strong>{release.build.application.name} · 整套发布</strong>
+                <span
+                  className={`status ${deploymentStatusClass(release.status)}`}
+                >
+                  {deploymentStatusLabels[release.status]}
+                </span>
+              </div>
+              <div className="deployment-record-meta">
+                <span>
+                  Build #{release.build.teamCityBuildNumber} / TC{" "}
+                  {release.build.teamCityBuildId}
+                </span>
+                <code>{release.build.commitSha.slice(0, 12)}</code>
+                <span>
+                  {release.build.branch} ·{" "}
+                  {release.deploymentDirectory.environment} ·{" "}
+                  {release.deploymentDirectory.server?.sshAlias}
+                </span>
+                <code>{release.deploymentDirectory.path}</code>
+                <span>
+                  {new Date(release.createdAt).toLocaleString("zh-CN")}
+                </span>
+              </div>
+              {release.errorMessage ? (
+                <p className="error-message">{release.errorMessage}</p>
+              ) : null}
+              {release.output ? (
+                <details className="deployment-output">
+                  <summary>查看发布收据与回退目录</summary>
+                  <pre>{release.output}</pre>
+                </details>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      </section>
       <section className="panel">
         <div className="panel-title-row">
           <div>

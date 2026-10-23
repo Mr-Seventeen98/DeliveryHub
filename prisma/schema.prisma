@@ -449,6 +449,7 @@ model Build {
   artifactManifestJson Json?         @map("artifact_manifest_json")
   stages              BuildStage[]
   images              ImageVersion[]
+  repositoryDeployments RepositoryDeployment[]
   createdAt           DateTime       @default(now()) @map("created_at")
   updatedAt           DateTime       @updatedAt @map("updated_at")
 
@@ -532,6 +533,15 @@ model ApplicationDeploymentDirectory {
   serverId      String?               @map("server_id") @db.Uuid
   server        Server?               @relation(fields: [serverId], references: [id])
   deployments   Deployment[]
+  repositoryDeployments RepositoryDeployment[]
+  // 自动发布仅接收启用时刻之后开始的整套构建；更新策略不追溯发布历史制品。
+  autoDeployEnabled Boolean @default(false) @map("auto_deploy_enabled")
+  autoDeployBranch String @default("main") @map("auto_deploy_branch")
+  autoDeployRunnerPath String? @map("auto_deploy_runner_path")
+  autoDeployEnabledAt DateTime? @map("auto_deploy_enabled_at")
+  // 数据库租约防止多实例同时调度；远端脚本还必须对实际运行目录加锁并保留幂等收据。
+  deployLeaseToken String? @map("deploy_lease_token")
+  deployLeaseUntil DateTime? @map("deploy_lease_until")
   name          String
   path          String
   environment   DeploymentEnvironment @default(UAT)
@@ -590,4 +600,24 @@ model AuditLog {
   @@index([resourceType, resourceId])
   @@index([requestId])
   @@map("audit_logs")
+}
+
+// 整套发布与单镜像手工部署分别记账。清单固定同一构建的全部摘要，唯一键防止回调/轮询重复发布。
+model RepositoryDeployment {
+  id String @id @default(uuid()) @db.Uuid
+  buildId String @map("build_id") @db.Uuid
+  build Build @relation(fields: [buildId], references: [id])
+  deploymentDirectoryId String @map("deployment_directory_id") @db.Uuid
+  deploymentDirectory ApplicationDeploymentDirectory @relation(fields: [deploymentDirectoryId], references: [id])
+  status DeploymentStatus @default(PENDING)
+  manifestJson Json @map("manifest_json")
+  output String?
+  errorMessage String? @map("error_message")
+  startedAt DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@unique([deploymentDirectoryId, buildId])
+  @@index([status, createdAt])
+  @@map("repository_deployments")
 }

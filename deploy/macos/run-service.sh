@@ -1,5 +1,5 @@
 #!/bin/bash
-# DeliveryHub 的 launchd 前台入口。只管理传入服务，不启动融合平台部署任务。
+# DeliveryHub 的 launchd 前台入口。API 根据数据库中显式启用的应用策略调度整套发布，不另开发布守护进程。
 # 密钥从权限为 0600 的配置文件加载，避免写入可被系统枚举的 plist 或命令行。
 set -euo pipefail
 root="$1"
