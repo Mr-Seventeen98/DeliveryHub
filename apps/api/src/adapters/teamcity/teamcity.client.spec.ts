@@ -54,6 +54,44 @@ describe("TeamCityClient", () => {
       }),
     );
   });
+  // 保护真实入队 HTTP 契约：仓库手动重试/首次构建的短名和旧组件入口的完整引用必须指向同一分支。
+  it.each([
+    ["main", "refs/heads/main"],
+    ["refs/heads/main", "refs/heads/main"],
+    ["feature/ci-fix", "refs/heads/feature/ci-fix"],
+  ])(
+    "入队时将发布分支 %s 发送为完整 Git 引用",
+    async (branch, expectedBranch) => {
+      const request = vi.fn().mockResolvedValue({
+        statusCode: 200,
+        body: { id: 42, state: "queued" },
+      });
+      const client = new TeamCityClient({
+        request,
+      } as unknown as ExternalHttpClient);
+      await client.queueBuild(
+        {
+          baseUrl: "https://teamcity.example",
+          token: "fixture",
+          verifySsl: true,
+        },
+        "RepositoryCI",
+        branch,
+      );
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith(
+        "https://teamcity.example/app/rest/buildQueue",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            branchName: expectedBranch,
+            buildType: { id: "RepositoryCI" },
+          }),
+        }),
+      );
+    },
+  );
+
   it("sends bearer authentication and requests JSON", async () => {
     const request = vi.fn().mockResolvedValue({
       statusCode: 200,

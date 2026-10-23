@@ -646,6 +646,11 @@ export class TeamCityClient {
     );
   }
 
+  /**
+   * 构建入队统一接收 Git 发布分支，按受管 VCS Root 使用的完整引用发送给 TeamCity。
+   * 仓库流水线与首次构建会传 main 等短名；已有组件入口可能已传 refs/heads/main。
+   * 在 HTTP 边界归一化可同时覆盖这些入口，避免短名被当作未监控分支而回退默认提交并判失败。
+   */
   async queueBuild(
     config: TeamCityClientConfig,
     buildTypeId: string,
@@ -654,7 +659,10 @@ export class TeamCityClient {
     return this.postJson<TeamCityBuildResponse>(
       config,
       "/app/rest/buildQueue",
-      { branchName, buildType: { id: buildTypeId } },
+      {
+        branchName: normalizeTeamCityBranch(branchName),
+        buildType: { id: buildTypeId },
+      },
       "TeamCity build queue request failed",
     );
   }
