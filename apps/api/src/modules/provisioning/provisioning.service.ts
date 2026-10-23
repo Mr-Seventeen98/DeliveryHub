@@ -482,6 +482,7 @@ export class ProvisioningService {
             pipeline.definition,
             dto.pipelineDefinitionPath!,
           ),
+          perCheckinTriggering: false,
           autoBuildEnabled: dto.autoBuildEnabled,
           releaseBranch: dto.releaseBranch,
         };
@@ -501,6 +502,7 @@ export class ProvisioningService {
             buildTypeId,
             dto.autoBuildEnabled,
             dto.releaseBranch,
+            false,
           );
           reusedResources += 1;
         } else {

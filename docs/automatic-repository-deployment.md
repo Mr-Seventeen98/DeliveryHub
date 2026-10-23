@@ -6,6 +6,8 @@
 
 每轮选取最新合格构建，校验五个同提交 AVAILABLE 镜像及摘要，生成固定摘要清单。数据库租约覆盖 SSH 的最长执行窗口，唯一键防止同目录同构建重复登记；执行器从该构建完整提交获取，远端必须持有目录级锁，以收据实现幂等和单调版本保护。发布不与旧构建混合镜像。
 
+仓库流水线的 VCS 触发按 quiet period 汇总最新 main，关闭逐提交及按提交人拆分，避免合并历史提交时对中间源码逐个排队。旧逐组件任务默认仍逐提交构建。首次 UAT 预检须保存 `.deliveryhub-initial-baseline.json` 的四服务 image/imageId；后续用成功收据校验当前实例，CI 等待期间若被其他发布改动就停止，避免覆盖新版本。
+
 执行器协议：Python3 标准库脚本接收一个清单文件参数；schemaVersion=1，releaseId 是发布 UUID，buildId 为 TeamCity 数字 ID，commitSha 为完整 SHA，directory 为已有目标目录，images 按 api/worker/migration/web/visualization 给出 fullName、digest、pinned。SSH 标准输入传递脚本、清单和 Registry 登录，临时 Docker 配置退出删除。脚本成功时 stdout 最后一行为 JSON，至少含 status=SUCCESS、commitSha、buildId；失败仅输出安全的阶段说明。
 
 `GET /api/v1/deployments/automatic-policies` 和 `/repository-releases` 提供策略与最近100条记录。部署成功与构建成功分别记录，前端发布收据包含实际镜像、Migration 和回退目录。FAILED 不静默重试；SSH 超时不能证明远端停止，必须核对目标 releases 下的 started/receipt 与当前实例，不能靠删除记录强行重复。

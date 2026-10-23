@@ -318,6 +318,28 @@ describe("TeamCityClient", () => {
     );
   });
 
+  it("batches repository commits without changing the legacy trigger default", async () => {
+    // 一个 push 可能带入多个已上线祖先提交；整套发布只需要最新完整提交的一次流水线。
+    const request = vi.fn().mockResolvedValue({ statusCode: 200, body: {} });
+    const client = new TeamCityClient({
+      request,
+    } as unknown as ExternalHttpClient);
+    await client.updateBuildTriggers(
+      { baseUrl: "http://teamcity", token: "secret", verifySsl: true },
+      "RepositoryCI",
+      true,
+      "main",
+      false,
+    );
+    const options = request.mock.calls[0]?.[1] as { body: string };
+    expect(JSON.parse(options.body).trigger[0].properties.property).toEqual(
+      expect.arrayContaining([
+        { name: "perCheckinTriggering", value: "false" },
+        { name: "groupCheckinsByCommitter", value: "false" },
+      ]),
+    );
+  });
+
   it("updates an existing project name and build configuration", async () => {
     const request = vi.fn().mockResolvedValue({ statusCode: 200, body: {} });
     const client = new TeamCityClient({

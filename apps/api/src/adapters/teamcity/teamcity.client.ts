@@ -136,6 +136,8 @@ export interface TeamCityCreateBuildTypeInput {
   }>;
   autoBuildEnabled: boolean;
   releaseBranch: string;
+  /** 整套仓库流水线按 quiet period 汇总最新提交；旧组件任务仍默认逐提交构建。 */
+  perCheckinTriggering?: boolean;
 }
 
 interface TeamCityProjectsResponse {
@@ -502,6 +504,7 @@ export class TeamCityClient {
           triggers: this.buildTriggersPayload(
             input.autoBuildEnabled,
             input.releaseBranch,
+            input.perCheckinTriggering,
           ),
         }
       : {};
@@ -551,11 +554,16 @@ export class TeamCityClient {
     buildTypeId: string,
     autoBuildEnabled: boolean,
     releaseBranch: string,
+    perCheckinTriggering = true,
   ): Promise<void> {
     await this.putJson<unknown>(
       config,
       `/app/rest/buildTypes/id:${encodeURIComponent(buildTypeId)}/triggers`,
-      this.buildTriggersPayload(autoBuildEnabled, releaseBranch),
+      this.buildTriggersPayload(
+        autoBuildEnabled,
+        releaseBranch,
+        perCheckinTriggering,
+      ),
       "TeamCity build triggers update failed",
     );
   }
@@ -563,6 +571,7 @@ export class TeamCityClient {
   private buildTriggersPayload(
     autoBuildEnabled: boolean,
     releaseBranch: string,
+    perCheckinTriggering = true,
   ): {
     trigger: Array<{
       type: string;
@@ -582,8 +591,15 @@ export class TeamCityClient {
                     // 同时保留精确逻辑名；只写 refs/heads/... 会漏掉默认分支上的提交。
                     value: `-:*\n+:<default>\n+:${normalizeTeamCityBranch(releaseBranch)}`,
                   },
-                  { name: "perCheckinTriggering", value: "true" },
-                  { name: "groupCheckinsByCommitter", value: "true" },
+                  // 合并多个已上线提交时只构建最新完整源码，避免逐个祖先提交触发缺少发布器的中间版本。
+                  {
+                    name: "perCheckinTriggering",
+                    value: String(perCheckinTriggering),
+                  },
+                  {
+                    name: "groupCheckinsByCommitter",
+                    value: String(perCheckinTriggering),
+                  },
                   { name: "quietPeriodMode", value: "USE_DEFAULT" },
                 ],
               },
