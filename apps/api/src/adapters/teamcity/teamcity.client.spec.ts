@@ -3,6 +3,61 @@ import type { ExternalHttpClient } from "../external-http.client";
 import { TeamCityClient } from "./teamcity.client";
 
 describe("TeamCityClient", () => {
+  // 此 locator 已在真实 TeamCity 回读：队列不接受 defaultFilter，历史构建集合才接受。
+  it("reconciles acceptance queues without unsupported locator dimensions", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValue({ statusCode: 200, body: { build: [] } });
+    const client = new TeamCityClient({
+      request,
+    } as unknown as ExternalHttpClient);
+    await client.findAcceptanceBuild(
+      { baseUrl: "http://tc", token: "fixture", verifySsl: true },
+      "UAT",
+      "release",
+    );
+    const queue = new URL(String(request.mock.calls[0]?.[0]));
+    const history = new URL(String(request.mock.calls[1]?.[0]));
+    expect(queue.searchParams.get("locator")).not.toContain("defaultFilter");
+    expect(history.searchParams.get("locator")).toContain(
+      "defaultFilter:false",
+    );
+  });
+  it("pins acceptance checkout and keeps callback token a password parameter", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValue({ statusCode: 200, body: { id: 42 } });
+    const client = new TeamCityClient({
+      request,
+    } as unknown as ExternalHttpClient);
+    await client.queueAcceptanceBuild(
+      { baseUrl: "http://tc", token: "fixture", verifySsl: true },
+      {
+        buildTypeId: "UAT",
+        branch: "main",
+        commitSha: "a".repeat(40),
+        releaseId: "release",
+        sourceBuildId: "3818",
+        callbackUrl: "http://callback",
+        callbackToken: "fixture-callback",
+      },
+    );
+    const body = JSON.parse(
+      String((request.mock.calls[0]?.[1] as { body: string }).body),
+    );
+    expect(body.revisions.revision).toEqual([{ version: "a".repeat(40) }]);
+    expect(
+      body.properties.property.find(
+        (p: { name: string }) =>
+          p.name === "env.DELIVERYHUB_ACCEPTANCE_CALLBACK_TOKEN",
+      ).type.rawValue,
+    ).toContain("password");
+    expect(
+      body.properties.property.some((p: { name: string }) =>
+        /UAT_PASSWORD|UAT_USERNAME/.test(p.name),
+      ),
+    ).toBe(false);
+  });
   // 真实服务器的标量设置接口拒绝 JSON Accept 与不存在的并发字段；保留该契约防止退回仅 Mock 成功。
   it("uses supported scalar settings and text responses for repository pipelines", async () => {
     const request = vi.fn().mockResolvedValue({ statusCode: 200, body: "1" });

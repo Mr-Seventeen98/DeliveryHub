@@ -5315,6 +5315,7 @@ function DeploymentsPage(): React.ReactElement {
           autoDeployEnabled: boolean;
           autoDeployBranch: string;
           autoDeployRunnerPath: string;
+          acceptanceBuildTypeId: string | null;
           application: { name: string };
           server: { name: string; sshAlias: string } | null;
         }>
@@ -5331,12 +5332,19 @@ function DeploymentsPage(): React.ReactElement {
           output: string | null;
           errorMessage: string | null;
           createdAt: string;
+          acceptanceStatus: string;
+          acceptanceTeamCityBuildId: string | null;
+          acceptanceErrorMessage: string | null;
+          acceptanceResultJson: unknown;
           build: {
             teamCityBuildId: string;
             teamCityBuildNumber: string;
             commitSha: string;
             branch: string;
-            application: { name: string };
+            application: {
+              name: string;
+              teamCityConnection: { baseUrl: string };
+            };
           };
           deploymentDirectory: {
             path: string;
@@ -5376,6 +5384,9 @@ function DeploymentsPage(): React.ReactElement {
             >
               {policy.autoDeployEnabled ? "自动发布已启用" : "自动发布已暂停"}
             </span>
+            {policy.acceptanceBuildTypeId
+              ? " · 发布后自动浏览器验收已启用"
+              : " · 未配置发布后自动验收"}
           </p>
         ))}
         {policies.isError ? (
@@ -5416,6 +5427,45 @@ function DeploymentsPage(): React.ReactElement {
               </div>
               {release.errorMessage ? (
                 <p className="error-message">{release.errorMessage}</p>
+              ) : null}
+              {/* 部署成功与真实业务验收分别展示；不能以容器健康代替登录/地图/项目切换通过。 */}
+              <div className="deployment-record-meta">
+                <span
+                  className={`status ${release.acceptanceStatus === "SUCCESS" ? "success" : release.acceptanceStatus === "FAILED" ? "danger" : ["RUNNING", "QUEUED"].includes(release.acceptanceStatus) ? "active" : "draft"}`}
+                >
+                  {(
+                    {
+                      NOT_CONFIGURED: "未配置自动验收",
+                      PENDING: "等待部署后验收",
+                      QUEUED: "验收已入队",
+                      RUNNING: "浏览器验收中",
+                      SUCCESS: "业务验收通过",
+                      FAILED: "业务验收失败",
+                    } as Record<string, string>
+                  )[release.acceptanceStatus] ?? "验收状态待确认"}
+                </span>
+                {release.acceptanceTeamCityBuildId ? (
+                  <a
+                    href={`${release.build.application.teamCityConnection.baseUrl.replace(/\/$/, "")}/viewLog.html?buildId=${encodeURIComponent(release.acceptanceTeamCityBuildId)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    TeamCity 验收 {release.acceptanceTeamCityBuildId}
+                  </a>
+                ) : null}
+              </div>
+              {release.acceptanceErrorMessage ? (
+                <p className="error-message">
+                  {release.acceptanceErrorMessage}
+                </p>
+              ) : null}
+              {release.acceptanceResultJson ? (
+                <details className="deployment-output">
+                  <summary>查看业务验收结果</summary>
+                  <pre>
+                    {JSON.stringify(release.acceptanceResultJson, null, 2)}
+                  </pre>
+                </details>
               ) : null}
               {release.output ? (
                 <details className="deployment-output">

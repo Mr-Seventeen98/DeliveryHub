@@ -94,6 +94,7 @@ export class AutomaticDeploymentsService
         autoDeployBranch: true,
         autoDeployRunnerPath: true,
         autoDeployEnabledAt: true,
+        acceptanceBuildTypeId: true,
         application: { select: { name: true } },
         server: { select: { name: true, sshAlias: true } },
       },
@@ -110,7 +111,12 @@ export class AutomaticDeploymentsService
             teamCityBuildNumber: true,
             commitSha: true,
             branch: true,
-            application: { select: { name: true } },
+            application: {
+              select: {
+                name: true,
+                teamCityConnection: { select: { baseUrl: true } },
+              },
+            },
           },
         },
         deploymentDirectory: {
@@ -269,6 +275,11 @@ export class AutomaticDeploymentsService
         deploymentDirectoryId: id,
         buildId: build.id,
         manifestJson: {},
+        // 在创建发布时固定验收任务；以后修改策略不会让历史发布突然补跑或换用别的任务。
+        acceptanceStatus: directory.acceptanceBuildTypeId
+          ? "PENDING"
+          : "NOT_CONFIGURED",
+        acceptanceBuildTypeId: directory.acceptanceBuildTypeId,
       },
       update: {},
     });

@@ -539,6 +539,8 @@ model ApplicationDeploymentDirectory {
   autoDeployBranch String @default("main") @map("auto_deploy_branch")
   autoDeployRunnerPath String? @map("auto_deploy_runner_path")
   autoDeployEnabledAt DateTime? @map("auto_deploy_enabled_at")
+  // 发布后验收使用同一 TeamCity 连接中的独立任务；凭据留在该任务的安全参数，不进入 Hub。
+  acceptanceBuildTypeId String? @map("acceptance_build_type_id")
   // 数据库租约防止多实例同时调度；远端脚本还必须对实际运行目录加锁并保留幂等收据。
   deployLeaseToken String? @map("deploy_lease_token")
   deployLeaseUntil DateTime? @map("deploy_lease_until")
@@ -615,9 +617,21 @@ model RepositoryDeployment {
   errorMessage String? @map("error_message")
   startedAt DateTime? @map("started_at")
   finishedAt DateTime? @map("finished_at")
+  // 部署与业务验收分别记账；历史/未配置记录保持 NOT_CONFIGURED，不能回溯伪造验收通过。
+  acceptanceStatus String @default("NOT_CONFIGURED") @map("acceptance_status")
+  acceptanceBuildTypeId String? @map("acceptance_build_type_id")
+  acceptanceTeamCityBuildId String? @map("acceptance_teamcity_build_id")
+  acceptanceResultJson Json? @map("acceptance_result_json")
+  acceptanceErrorMessage String? @map("acceptance_error_message")
+  acceptanceStartedAt DateTime? @map("acceptance_started_at")
+  acceptanceFinishedAt DateTime? @map("acceptance_finished_at")
+  // 独立调度租约覆盖入队及回读；POST 响应丢失时先按 releaseId 查回任务，避免直接重复入队。
+  acceptanceLeaseToken String? @map("acceptance_lease_token")
+  acceptanceLeaseUntil DateTime? @map("acceptance_lease_until")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   @@unique([deploymentDirectoryId, buildId])
   @@index([status, createdAt])
+  @@index([acceptanceStatus], map: "repository_deployments_acceptance_status_idx")
   @@map("repository_deployments")
 }

@@ -6,10 +6,22 @@ import { ServersModule } from "../servers/servers.module";
 import { DeploymentsController } from "./deployments.controller";
 import { DeploymentsService } from "./deployments.service";
 import { AutomaticDeploymentsService } from "./automatic-deployments.service";
+import { AdaptersModule } from "../../adapters/adapters.module";
+import { UatAcceptanceService } from "./uat-acceptance.service";
 
 @Module({
-  imports: [AuditModule, CredentialsModule, GitLabModule, ServersModule],
+  imports: [
+    AuditModule,
+    CredentialsModule,
+    GitLabModule,
+    ServersModule,
+    AdaptersModule,
+  ],
   controllers: [DeploymentsController],
-  providers: [DeploymentsService, AutomaticDeploymentsService],
+  providers: [
+    DeploymentsService,
+    AutomaticDeploymentsService,
+    UatAcceptanceService,
+  ],
 })
 export class DeploymentsModule {}

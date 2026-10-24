@@ -700,6 +700,108 @@ export class TeamCityClient {
     );
   }
 
+  /** 发布后验收固定源码 revision；运行参数只有发布身份及窄范围回调令牌，不携带 UAT 账号密码。 */
+  async queueAcceptanceBuild(
+    config: TeamCityClientConfig,
+    input: {
+      buildTypeId: string;
+      branch: string;
+      commitSha: string;
+      releaseId: string;
+      sourceBuildId: string;
+      callbackUrl: string;
+      callbackToken: string;
+    },
+  ): Promise<TeamCityBuildResponse> {
+    return this.postJson(
+      config,
+      "/app/rest/buildQueue",
+      {
+        buildType: { id: input.buildTypeId },
+        branchName: normalizeTeamCityBranch(input.branch),
+        revisions: { revision: [{ version: input.commitSha }] },
+        comment: { text: `DeliveryHub UAT release ${input.releaseId}` },
+        properties: {
+          property: [
+            { name: "deliveryhub.release_id", value: input.releaseId },
+            { name: "env.UAT_RELEASE_ID", value: input.releaseId },
+            { name: "env.UAT_SOURCE_BUILD_ID", value: input.sourceBuildId },
+            { name: "env.UAT_EXPECTED_COMMIT", value: input.commitSha },
+            {
+              name: "env.DELIVERYHUB_ACCEPTANCE_CALLBACK_URL",
+              value: input.callbackUrl,
+            },
+            {
+              name: "env.DELIVERYHUB_ACCEPTANCE_CALLBACK_TOKEN",
+              value: input.callbackToken,
+              type: { rawValue: "password display='hidden'" },
+            },
+          ],
+        },
+      },
+      "TeamCity acceptance queue failed",
+    );
+  }
+
+  /** 查回已入队/已运行的同一 release，补偿入队响应丢失；不把参数内容写入日志或 Hub 记录。 */
+  async findAcceptanceBuild(
+    config: TeamCityClientConfig,
+    buildTypeId: string,
+    releaseId: string,
+  ): Promise<TeamCityBuildResponse | null> {
+    const fields =
+      "build(id,buildType(id),state,status,comment(text),properties(property(name,value)),resultingProperties(property(name,value)))";
+    for (const collection of ["buildQueue", "builds"]) {
+      const query = new URLSearchParams({
+        // 队列 locator 不支持 defaultFilter；历史构建才需要关闭默认过滤以查回失败/取消的尝试。
+        locator: `buildType:(id:${buildTypeId}),count:100${collection === "builds" ? ",defaultFilter:false" : ""}`,
+        fields,
+      });
+      const response = await this.getOptional<{
+        build?: Array<
+          TeamCityBuildResponse & {
+            comment?: { text?: string };
+            properties?: { property?: Array<{ name: string; value?: string }> };
+          }
+        >;
+      }>(
+        config,
+        `/app/rest/${collection}?${query}`,
+        "TeamCity acceptance reconciliation failed",
+      );
+      const match = response?.build?.find(
+        (build) =>
+          build.comment?.text === `DeliveryHub UAT release ${releaseId}` ||
+          [
+            ...(build.properties?.property ?? []),
+            ...(build.resultingProperties?.property ?? []),
+          ].some(
+            (p) => p.name === "deliveryhub.release_id" && p.value === releaseId,
+          ),
+      );
+      if (match)
+        return {
+          id: match.id,
+          buildType: match.buildType,
+          state: match.state,
+          status: match.status,
+        };
+    }
+    return null;
+  }
+
+  /** 仅取固定验收产物，调用方还必须核验 TeamCity 终态、源码与发布身份。 */
+  getAcceptanceResult(
+    config: TeamCityClientConfig,
+    buildId: string,
+  ): Promise<unknown | null> {
+    return this.getOptional(
+      config,
+      `/app/rest/builds/id:${encodeURIComponent(buildId)}/artifacts/content/uat-acceptance/result.json`,
+      "TeamCity acceptance result unavailable",
+    );
+  }
+
   async getBuildById(
     config: TeamCityClientConfig,
     buildId: string,

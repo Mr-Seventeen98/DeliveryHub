@@ -85,6 +85,14 @@ openssl rand -base64 24  # INITIAL_ADMIN_PASSWORD
 
 ## 验证
 
+### 发布后 UAT 自动浏览器验收
+
+整套自动发布策略可通过管理员接口 `PUT /api/v1/deployments/automatic-policies/:id/acceptance` 绑定同一 TeamCity 项目内的独立验收任务，请求为 `{ "buildTypeId": "项目内的验收任务ID" }`；传 `null` 停止为后续发布创建验收。该配置不追溯历史发布，也不改变原有组件构建、整套构建或手工 Compose 发布入口。
+
+验收任务不设置 VCS 触发器。DeliveryHub 收到部署成功回执后固定源码提交和源构建号入队；账号/密码保存在该任务的 TeamCity Password 参数中，Hub 不接收或保存业务密码。任务归档 `uat-acceptance/result.json`，并向发布专属回调地址发送完成通知。Hub 核验可信 TeamCity 终态、checkout 与报告身份后更新独立验收状态，回调丢失时每 15 秒补同步。
+
+部署记录分别显示部署状态、验收状态和远程验收构建链接。失败验收不会将镜像改成不可用，也不隐式执行业务数据回滚；应根据报告定位服务、入口、权限或浏览器资源问题。未配置验收的历史记录保持“未配置自动验收”，不能当作已经通过。
+
 ```bash
 pnpm typecheck
 pnpm test
