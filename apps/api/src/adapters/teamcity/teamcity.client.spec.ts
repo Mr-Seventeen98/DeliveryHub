@@ -26,6 +26,10 @@ describe("TeamCityClient", () => {
   it("pins acceptance checkout and keeps callback token a password parameter", async () => {
     const request = vi
       .fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        body: { "vcs-root-entry": [{ id: "GitLab" }] },
+      })
       .mockResolvedValue({ statusCode: 200, body: { id: 42 } });
     const client = new TeamCityClient({
       request,
@@ -43,9 +47,18 @@ describe("TeamCityClient", () => {
       },
     );
     const body = JSON.parse(
-      String((request.mock.calls[0]?.[1] as { body: string }).body),
+      String((request.mock.calls[1]?.[1] as { body: string }).body),
     );
-    expect(body.revisions.revision).toEqual([{ version: "a".repeat(40) }]);
+    expect(body.revisions).toMatchObject({
+      failOnMissingRevisions: true,
+      revision: [
+        {
+          version: "a".repeat(40),
+          vcsBranchName: "refs/heads/main",
+          "vcs-root-instance": { "vcs-root-id": "GitLab" },
+        },
+      ],
+    });
     expect(
       body.properties.property.find(
         (p: { name: string }) =>

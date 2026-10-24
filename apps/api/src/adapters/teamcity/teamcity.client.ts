@@ -713,13 +713,36 @@ export class TeamCityClient {
       callbackToken: string;
     },
   ): Promise<TeamCityBuildResponse> {
+    // REST 固定 revision 必须同时指定 VCS Root；仅传 SHA 不能准确绑定验收使用的仓库。
+    const roots = await this.getOptional<{
+      "vcs-root-entry"?: Array<{ id: string }>;
+    }>(
+      config,
+      `/app/rest/buildTypes/id:${encodeURIComponent(input.buildTypeId)}/vcs-root-entries`,
+      "TeamCity acceptance VCS roots unavailable",
+    );
+    const root = roots?.["vcs-root-entry"];
+    if (root?.length !== 1)
+      throw new ExternalApiException(
+        "teamcity",
+        "UAT acceptance requires exactly one VCS Root",
+      );
     return this.postJson(
       config,
       "/app/rest/buildQueue",
       {
         buildType: { id: input.buildTypeId },
         branchName: normalizeTeamCityBranch(input.branch),
-        revisions: { revision: [{ version: input.commitSha }] },
+        revisions: {
+          failOnMissingRevisions: true,
+          revision: [
+            {
+              version: input.commitSha,
+              vcsBranchName: normalizeTeamCityBranch(input.branch),
+              "vcs-root-instance": { "vcs-root-id": root[0]!.id },
+            },
+          ],
+        },
         comment: { text: `DeliveryHub UAT release ${input.releaseId}` },
         properties: {
           property: [
